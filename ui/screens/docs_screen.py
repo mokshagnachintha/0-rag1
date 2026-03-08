@@ -62,7 +62,7 @@ class DocRow(BoxLayout):
             text_size=(None, None), size_hint_y=None, height=dp(22),
         ))
         info.add_widget(Label(
-            text=f"{doc['num_chunks']} chunks · {doc['added_at'][:16]}",
+            text=f"{doc['num_chunks']} chunks - {doc['added_at'][:16]}",
             halign="left", valign="middle",
             font_size=sp(10), color=(0.6, 0.6, 0.6, 1),
             text_size=(None, None), size_hint_y=None, height=dp(18),
@@ -70,7 +70,7 @@ class DocRow(BoxLayout):
         self.add_widget(info)
 
         del_btn = Button(
-            text="✕", size_hint=(None, 1), width=dp(40),
+            text="x", size_hint=(None, 1), width=dp(40),
             font_size=sp(14), background_normal="",
             background_color=(0.75, 0.15, 0.15, 1),
         )
@@ -136,7 +136,7 @@ class DocsScreen(Screen):
         browse_row = BoxLayout(size_hint=(1, None), height=dp(44), spacing=dp(8))
 
         browse_btn = Button(
-            text             = "＋  Browse Files (PDF / TXT)",
+            text             = "+  Browse Files (PDF / TXT)",
             size_hint        = (1, 1),
             font_size        = sp(14),
             bold             = True,
@@ -158,7 +158,7 @@ class DocsScreen(Screen):
         )
         _paint(manual_row, _BG)
         self._path_input = TextInput(
-            hint_text        = "Or paste a file path manually…",
+            hint_text        = "Or paste a file path manually...",
             multiline        = False,
             size_hint        = (1, 1),
             font_size        = sp(12),
@@ -244,7 +244,7 @@ class DocsScreen(Screen):
     def _ingest(self, path: str):
         import os
         name = os.path.basename(path)
-        self._set_status(f"Ingesting '{name}'…", (0.9, 0.8, 0.3, 1))
+        self._set_status(f"Ingesting '{name}'...", (0.9, 0.8, 0.3, 1))
         from rag.pipeline import ingest_document
         ingest_document(path, on_done=self._on_ingest_done)
 

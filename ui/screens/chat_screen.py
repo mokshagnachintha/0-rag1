@@ -194,7 +194,7 @@ class AttachmentPreviewCard(BoxLayout):
             orientation="vertical", size_hint=(1, 1), spacing=dp(2),
         )
         # Truncate long filenames
-        display = fname if len(fname) <= 22 else fname[:19] + "…"
+        display = fname if len(fname) <= 22 else fname[:19] + "..."
         name_lbl = Label(
             text=f"[b]{display}[/b]", markup=True,
             font_size=sp(12), color=_WHITE,
@@ -204,7 +204,7 @@ class AttachmentPreviewCard(BoxLayout):
         name_lbl.bind(size=lambda w, _: setattr(w, "text_size", (w.width, None)))
 
         type_lbl = Label(
-            text=f"{ext} · {size_txt}" if size_txt else ext,
+            text=f"{ext} - {size_txt}" if size_txt else ext,
             font_size=sp(10.5), color=_MUTED,
             halign="left", valign="top",
             size_hint_y=None, height=dp(18),
@@ -217,7 +217,7 @@ class AttachmentPreviewCard(BoxLayout):
 
         # ── × remove button ─────────────────────────────────────────── #
         x_btn = Button(
-            text="✕", font_size=sp(13),
+            text="x", font_size=sp(13),
             size_hint=(None, None), size=(dp(24), dp(24)),
             background_normal="", background_color=(0, 0, 0, 0),
             color=_MUTED,
@@ -259,7 +259,7 @@ class DocStatusCard(BoxLayout):
         _paint(inner, _DOC_CARD, radius=14)
 
         self._title = Label(
-            text=f"[b]📄  {filename}[/b]",
+            text=f"[b][DOC]  {filename}[/b]",
             markup=True,
             color=_WHITE, font_size=sp(13),
             size_hint_y=None, height=dp(22),
@@ -268,7 +268,7 @@ class DocStatusCard(BoxLayout):
         self._title.bind(size=lambda w, _: setattr(w, "text_size", (w.width, None)))
 
         self._status = Label(
-            text="Indexing…",
+            text="Indexing...",
             color=_GREEN, font_size=sp(12),
             size_hint_y=None, height=dp(18),
             halign="left", valign="middle",
@@ -291,7 +291,7 @@ class DocStatusCard(BoxLayout):
     def set_done(self, success: bool, message: str):
         self._bar.value = 100 if success else 0
         col  = "00cc66" if success else "ff5555"
-        icon = "✅" if success else "❌"
+        icon = "[OK]" if success else "[ERROR]"
         self._status.text   = f"[color={col}]{icon}  {message}[/color]"
         self._status.markup = True
 
@@ -311,7 +311,7 @@ class _TypingIndicator(BoxLayout):
         self._dots: list[Label] = []
         for _ in range(3):
             d = Label(
-                text="●", font_size=sp(10), color=_MUTED,
+                text=".", font_size=sp(10), color=_MUTED,
                 size_hint=(None, None), size=(dp(14), dp(14)),
             )
             self._dots.append(d)
@@ -400,7 +400,7 @@ class ChatScreen(Screen):
         # Welcome message — text updated when model is ready
         self._welcome = self._add_msg(
             "Hello! I'm your offline AI assistant.\n\n"
-            "⏳  [b]Preparing model…[/b] This may take a moment on first launch.",
+            "[b]Preparing model...[/b] This may take a moment on first launch.",
             role="assistant",
         )
 
@@ -446,7 +446,7 @@ class ChatScreen(Screen):
         _paint(pill, _INPUT_BG, radius=22)
 
         self._input = TextInput(
-            hint_text="Message…",
+            hint_text="Message...",
             multiline=False, size_hint=(1, 1),
             font_size=sp(14.5),
             foreground_color=_WHITE,
@@ -464,7 +464,7 @@ class ChatScreen(Screen):
             anchor_x="center", anchor_y="center",
         )
         send_btn = Button(
-            text="↑", font_size=sp(20), bold=True,
+            text=">", font_size=sp(20), bold=True,
             size_hint=(None, None), size=(dp(40), dp(40)),
             background_normal="", background_color=(0, 0, 0, 0),
             color=_WHITE,
@@ -502,21 +502,21 @@ class ChatScreen(Screen):
         # Determine which stage we are in based on the progress text
         txt_lo = text.lower()
         if "extract" in txt_lo:
-            stage = "\u2699\ufe0f  [b]Extracting model from APK\u2026[/b]"
+            stage = "[b]Extracting model from APK...[/b]"
             icon  = "\u2699\ufe0f"
         elif "start" in txt_lo or "engine" in txt_lo or "loading model" in txt_lo:
-            stage = "\u26a1  [b]Starting AI engine\u2026[/b]"
+            stage = "[b]Starting AI engine...[/b]"
             icon  = "\u26a1"
         elif "connect" in txt_lo or "hugging" in txt_lo or "download" in txt_lo or "/" in text:
-            stage = "\u2b07\ufe0f  [b]Downloading model\u2026[/b]"
+            stage = "[b]Downloading model...[/b]"
             icon  = "\u2b07\ufe0f"
         else:
-            stage = "\u23f3  [b]Preparing\u2026[/b]"
+            stage = "[b]Preparing...[/b]"
             icon  = "\u23f3"
 
         pct    = int(min(frac, 0.999) * 100)
-        filled = "\u2588" * (pct // 10)
-        empty  = "\u2591" * (10 - pct // 10)
+        filled = "#" * (pct // 10)
+        empty  = "-" * (10 - pct // 10)
         bar    = f"[color=19c37d]{filled}[/color][color=555555]{empty}[/color]"
 
         self._welcome._lbl.text = (
@@ -534,16 +534,16 @@ class ChatScreen(Screen):
                 self._send_btn.color = _WHITE
                 self._send_btn.opacity = 1.0
             self._welcome._lbl.text = (
-                "👋  [b]How can I assist you today?[/b]\n\n"
-                "• Just type a message to chat with me.\n"
-                "• Tap [b]＋[/b] to attach a [b]PDF[/b] or [b]TXT[/b] — "
+                "[b]How can I assist you today?[/b]\n\n"
+                "- Just type a message to chat with me.\n"
+                "- Tap [b]+[/b] to attach a [b]PDF[/b] or [b]TXT[/b] - "
                 "I'll answer questions about its content."
             )
             self._request_storage_permissions()
         else:
             self._model_ready = False
             self._welcome._lbl.text = (
-                f"[color=ff5555]⚠  Model failed to load:[/color]\n{message}\n\n"
+                f"[color=ff5555][WARN] Model failed to load:[/color]\n{message}\n\n"
                 "Check your connection and restart the app."
             )
 
@@ -761,7 +761,7 @@ class ChatScreen(Screen):
             self._has_docs = True
             self._rag_doc_name = fname
             self._add_msg(
-                f"📄  [b]RAG mode active[/b] — {fname}\n"
+                f"[DOC] [b]RAG mode active[/b] - {fname}\n"
                 "I'll answer all your questions using this document.\n"
                 "[color=888888][size=12sp]"
                 "Type [b]quit rag[/b] to return to normal chat."
@@ -770,7 +770,7 @@ class ChatScreen(Screen):
             )
         else:
             self._add_msg(
-                f"[color=ff5555]❌  Could not load document:[/color]\n{msg}",
+                f"[color=ff5555][ERROR] Could not load document:[/color]\n{msg}",
                 role="assistant",
             )
         self._scroll_down()
@@ -813,13 +813,13 @@ class ChatScreen(Screen):
                 doc = self._rag_doc_name
                 self._rag_doc_name = ""
                 self._add_msg(
-                    f"💬  [b]RAG mode off[/b] — {doc} removed.\n"
+                    f"[CHAT] [b]RAG mode off[/b] - {doc} removed.\n"
                     "Back to normal chat. Your conversation history is preserved.",
                     role="assistant",
                 )
             else:
                 self._add_msg(
-                    "ℹ️  Not in RAG mode. Upload a PDF or TXT to activate it.",
+                    "[INFO] Not in RAG mode. Upload a PDF or TXT to activate it.",
                     role="assistant",
                 )
             return
@@ -827,7 +827,7 @@ class ChatScreen(Screen):
         # Block sends until the LLM is ready
         if not self._model_ready:
             self._add_msg(
-                "⚡  [b]AI engine is still starting up…[/b]\n"
+                "[INFO] [b]AI engine is still starting up...[/b]\n"
                 "[color=888888][size=12sp]"
                 "You can watch the progress in the welcome panel above. "
                 "Please send your message once it's ready."
@@ -844,7 +844,7 @@ class ChatScreen(Screen):
             fname = os.path.basename(path)
             self._remove_attachment()
             # Show a user bubble with the attachment + any typed text
-            bubble_text = f"📎  [b]{fname}[/b]"
+            bubble_text = f"[FILE] [b]{fname}[/b]"
             if q:
                 bubble_text += f"\n{q}"
             self._add_msg(bubble_text, role="user")
