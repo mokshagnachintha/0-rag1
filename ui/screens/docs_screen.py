@@ -1,268 +1,270 @@
-"""
-docs_screen.py — Document management screen.
-Tap the '+' button to open the native Android file browser and pick
-a .txt or .pdf file to ingest into the RAG knowledge base.
-"""
 from __future__ import annotations
 
-from kivy.uix.screenmanager import Screen
-from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.scrollview import ScrollView
-from kivy.uix.label import Label
-from kivy.uix.textinput import TextInput
-from kivy.uix.button import Button
+import os
+from pathlib import Path
+
 from kivy.clock import mainthread
-from kivy.metrics import dp, sp
-from kivy.uix.widget import Widget
 from kivy.graphics import Color, RoundedRectangle
+from kivy.metrics import dp, sp
+from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.button import Button
+from kivy.uix.label import Label
+from kivy.uix.screenmanager import Screen
+from kivy.uix.scrollview import ScrollView
+from kivy.uix.textinput import TextInput
 
-# ── Palette (must match chat_screen / main) ──────────────────────── #
-_BG        = (0.129, 0.129, 0.129, 1)
-_HEADER_BG = (0.102, 0.102, 0.102, 1)
-_CARD_BG   = (0.184, 0.184, 0.184, 1)
-_INPUT_BG  = (0.231, 0.231, 0.231, 1)
-_GREEN     = (0.098, 0.761, 0.490, 1)
-_RED       = (0.75,  0.15,  0.15,  1)
-_WHITE     = (1, 1, 1, 1)
-_MUTED     = (0.60, 0.60, 0.63, 1)
-_DIVIDER   = (0.22, 0.22, 0.22, 1)
+from ui.controller import AppController
 
 
-def _paint(widget, color, radius=0):
+def _paint(widget, color, radius: float = 0):
     with widget.canvas.before:
         Color(*color)
-        rect = RoundedRectangle(radius=[dp(radius)]) if radius else RoundedRectangle()
+        rect = RoundedRectangle(radius=[dp(radius)])
     widget.bind(
-        pos =lambda w, _: setattr(rect, "pos",  w.pos),
+        pos=lambda w, _: setattr(rect, "pos", w.pos),
         size=lambda w, _: setattr(rect, "size", w.size),
     )
-    return rect
 
 
-class DocRow(BoxLayout):
-    """One row in the documents list."""
-
-    def __init__(self, doc: dict, on_delete, **kw):
+class _DocCard(BoxLayout):
+    def __init__(self, name: str, chunks: int, added_at: str, **kwargs):
         super().__init__(
-            size_hint=(1, None), height=dp(60),
-            spacing=dp(6), padding=[dp(12), dp(6)],
-            **kw,
+            orientation="vertical",
+            size_hint=(1, None),
+            padding=[dp(12), dp(10)],
+            spacing=dp(4),
+            **kwargs,
         )
-        with self.canvas.before:
-            Color(*_CARD_BG)
-            self._bg = RoundedRectangle(radius=[dp(8)])
-        self.bind(pos=lambda w,_: setattr(self._bg,'pos',w.pos),
-                  size=lambda w,_: setattr(self._bg,'size',w.size))
-        self.doc = doc
+        _paint(self, (0.17, 0.17, 0.20, 1), 10)
 
-        info = BoxLayout(orientation="vertical", size_hint=(1, 1))
-        info.add_widget(Label(
-            text=doc["name"], halign="left", valign="middle",
-            font_size=sp(13), color=(1, 1, 1, 1),
-            text_size=(None, None), size_hint_y=None, height=dp(22),
+        self.add_widget(Label(
+            text=f"[b]{name}[/b]",
+            markup=True,
+            size_hint=(1, None),
+            height=dp(20),
+            halign="left",
+            valign="middle",
+            font_size=sp(13),
         ))
-        info.add_widget(Label(
-            text=f"{doc['num_chunks']} chunks - {doc['added_at'][:16]}",
-            halign="left", valign="middle",
-            font_size=sp(10), color=(0.6, 0.6, 0.6, 1),
-            text_size=(None, None), size_hint_y=None, height=dp(18),
+        self.add_widget(Label(
+            text=f"{chunks} chunks • {added_at[:16]}",
+            size_hint=(1, None),
+            height=dp(18),
+            color=(0.72, 0.72, 0.75, 1),
+            halign="left",
+            valign="middle",
+            font_size=sp(11),
         ))
-        self.add_widget(info)
-
-        del_btn = Button(
-            text="x", size_hint=(None, 1), width=dp(40),
-            font_size=sp(14), background_normal="",
-            background_color=(0.75, 0.15, 0.15, 1),
-        )
-        del_btn.bind(on_release=lambda *_: on_delete(doc["id"]))
-        self.add_widget(del_btn)
+        self.height = dp(68)
 
 
 class DocsScreen(Screen):
-    def __init__(self, **kw):
-        super().__init__(**kw)
+    def __init__(self, controller: AppController, **kwargs):
+        super().__init__(**kwargs)
+        self.controller = controller
         self._build_ui()
+        self.controller.events.subscribe("docs_changed", self._on_docs_changed_event)
 
-    def on_enter(self, *_):
-        self._refresh_list()
+    def on_pre_enter(self, *_):
+        self._refresh_docs()
 
     def _build_ui(self):
         root = BoxLayout(orientation="vertical")
-        _paint(root, _BG)
+        _paint(root, (0.09, 0.09, 0.10, 1), 0)
 
-        # ── header ───────────────────────────────────────────────── #
-        header = BoxLayout(size_hint=(1, None), height=dp(54))
-        _paint(header, _HEADER_BG)
+        header = BoxLayout(
+            size_hint=(1, None),
+            height=dp(58),
+            padding=[dp(14), dp(10)],
+            spacing=dp(8),
+        )
+        _paint(header, (0.12, 0.12, 0.13, 1), 0)
         header.add_widget(Label(
-            text="[b]Documents[/b]", markup=True,
-            color=_WHITE, font_size=sp(16),
-            halign="center", valign="middle",
+            text="[b]Documents[/b]",
+            markup=True,
+            font_size=sp(17),
+            halign="left",
+            valign="middle",
+            size_hint=(1, 1),
         ))
-        sep = Widget(size_hint=(1, None), height=dp(1))
-        _paint(sep, _DIVIDER)
+        chat_btn = Button(
+            text="Chat",
+            size_hint=(None, 1),
+            width=dp(78),
+            background_normal="",
+            background_color=(0.14, 0.62, 0.44, 1),
+        )
+        chat_btn.bind(on_release=lambda *_: setattr(self.manager, "current", "chat"))
+        header.add_widget(chat_btn)
         root.add_widget(header)
-        root.add_widget(sep)
 
-        # ── doc list ─────────────────────────────────────────────── #
+        action = BoxLayout(
+            size_hint=(1, None),
+            height=dp(56),
+            spacing=dp(8),
+            padding=[dp(12), dp(8)],
+        )
+        _paint(action, (0.11, 0.11, 0.12, 1), 0)
+
+        pick_btn = Button(
+            text="+ Add PDF/TXT",
+            background_normal="",
+            background_color=(0.19, 0.42, 0.70, 1),
+        )
+        pick_btn.bind(on_release=self._on_pick)
+
+        clear_btn = Button(
+            text="Clear All",
+            size_hint=(None, 1),
+            width=dp(92),
+            background_normal="",
+            background_color=(0.62, 0.18, 0.22, 1),
+        )
+        clear_btn.bind(on_release=self._on_clear_all)
+
+        action.add_widget(pick_btn)
+        action.add_widget(clear_btn)
+        root.add_widget(action)
+
+        path_row = BoxLayout(
+            size_hint=(1, None),
+            height=dp(60),
+            spacing=dp(8),
+            padding=[dp(12), dp(10)],
+        )
+        _paint(path_row, (0.11, 0.11, 0.12, 1), 0)
+
+        self._path_input = TextInput(
+            multiline=False,
+            hint_text="Or paste full document path...",
+            size_hint=(1, 1),
+            font_size=sp(13),
+            foreground_color=(1, 1, 1, 1),
+            hint_text_color=(0.6, 0.6, 0.62, 1),
+            background_color=(0.18, 0.18, 0.20, 1),
+            cursor_color=(1, 1, 1, 1),
+        )
+        add_path_btn = Button(
+            text="Ingest",
+            size_hint=(None, 1),
+            width=dp(86),
+            background_normal="",
+            background_color=(0.14, 0.62, 0.44, 1),
+        )
+        add_path_btn.bind(on_release=self._on_ingest_manual)
+
+        path_row.add_widget(self._path_input)
+        path_row.add_widget(add_path_btn)
+        root.add_widget(path_row)
+
         self._scroll = ScrollView(size_hint=(1, 1))
-        _paint(self._scroll, _BG)
         self._list = BoxLayout(
             orientation="vertical",
             size_hint=(1, None),
-            spacing=dp(6),
-            padding=[dp(10), dp(10)],
+            spacing=dp(8),
+            padding=[dp(12), dp(12)],
         )
         self._list.bind(minimum_height=self._list.setter("height"))
         self._scroll.add_widget(self._list)
         root.add_widget(self._scroll)
 
-        # ── status label ─────────────────────────────────────────── #
         self._status = Label(
-            text="", size_hint=(1, None), height=dp(28),
-            font_size=sp(11), color=(0.5, 0.9, 0.5, 1),
+            text="",
+            size_hint=(1, None),
+            height=dp(32),
+            font_size=sp(12),
+            color=(0.72, 0.92, 0.75, 1),
         )
         root.add_widget(self._status)
 
-        # ── bottom bar: file picker + manual path fallback ───────── #
-        bar = BoxLayout(
-            size_hint=(1, None), height=dp(72),
-            orientation="vertical",
-            padding=[dp(10), dp(6)],
-            spacing=dp(4),
-        )
-        _paint(bar, _HEADER_BG)
-
-        # Row 1 — Browse button (primary; uses native Android picker)
-        browse_row = BoxLayout(size_hint=(1, None), height=dp(44), spacing=dp(8))
-
-        browse_btn = Button(
-            text             = "+  Browse Files (PDF / TXT)",
-            size_hint        = (1, 1),
-            font_size        = sp(14),
-            bold             = True,
-            background_normal= "",
-            background_color = _GREEN,
-            color            = _WHITE,
-        )
-        _paint(browse_btn, _GREEN, radius=10)
-        browse_btn.bind(on_release=self._on_browse)
-        browse_row.add_widget(browse_btn)
-        bar.add_widget(browse_row)
-
-        root.add_widget(bar)
-
-        # ── manual path row (collapsed by default, shown as fallback) #
-        manual_row = BoxLayout(
-            size_hint=(1, None), height=dp(48),
-            spacing=dp(8), padding=[dp(10), dp(4)],
-        )
-        _paint(manual_row, _BG)
-        self._path_input = TextInput(
-            hint_text        = "Or paste a file path manually...",
-            multiline        = False,
-            size_hint        = (1, 1),
-            font_size        = sp(12),
-            foreground_color = _WHITE,
-            hint_text_color  = _MUTED,
-            background_color = _INPUT_BG,
-            cursor_color     = _WHITE,
-        )
-        add_btn = Button(
-            text="Add", size_hint=(None, 1), width=dp(60),
-            font_size=sp(13), background_normal="",
-            background_color=_GREEN,
-        )
-        add_btn.bind(on_release=self._on_add_manual)
-        manual_row.add_widget(self._path_input)
-        manual_row.add_widget(add_btn)
-        root.add_widget(manual_row)
-
         self.add_widget(root)
 
-    # ── helpers ──────────────────────────────────────────────────── #
+    # ------------------------------------------------------------------
+    # Actions
+    # ------------------------------------------------------------------
 
-    def _refresh_list(self):
-        from rag.db import list_documents
-        self._list.clear_widgets()
-        docs = list_documents()
-        if not docs:
-            self._list.add_widget(Label(
-                text="No documents yet.\nTap [b]Browse Files[/b] to add a PDF or TXT.",
-                markup=True,
-                size_hint=(1, None), height=dp(80),
-                halign="center", font_size=sp(13),
-                color=_MUTED,
-            ))
-        for d in docs:
-            self._list.add_widget(DocRow(d, on_delete=self._on_delete))
-
-    # ── file browser (native Android picker via plyer) ────────────── #
-
-    def _on_browse(self, *_):
-        """Open the native file chooser. Falls back to manual input if plyer unavailable."""
+    def _on_pick(self, *_):
         try:
-            import os
             from plyer import filechooser
-            # Android requires MIME types; desktop uses glob filters
-            if os.environ.get("ANDROID_PRIVATE"):
-                filters = ["application/pdf", "text/plain"]
-            else:
-                filters = [["Documents", "*.pdf", "*.txt", "*.PDF", "*.TXT"]]
+
             filechooser.open_file(
-                on_selection = self._on_file_selected,
-                filters      = filters,
-                title        = "Choose a document",
-                multiple     = False,
+                on_selection=self._on_file_selected,
+                filters=[["Documents", "*.pdf", "*.txt", "*.PDF", "*.TXT"]],
+                title="Pick document",
+                multiple=False,
             )
-        except Exception:
-            # plyer not available — show manual path input hint
-            self._set_status(
-                "File browser unavailable. Use the path field below.",
-                (0.9, 0.8, 0.3, 1),
-            )
+        except Exception as exc:
+            self._set_status(f"Picker unavailable: {exc}", ok=False)
 
     @mainthread
     def _on_file_selected(self, selection):
-        """Called by plyer when the user picks a file."""
         if not selection:
             return
         from rag.chunker import resolve_uri
-        path = resolve_uri(selection[0])  # handle content:// URI on Android
-        self._ingest(path)
+        try:
+            path = resolve_uri(selection[0])
+            self._ingest(path)
+        except Exception as exc:
+            self._set_status(f"Could not open selected file: {exc}", ok=False)
 
-    # ── manual path fallback ─────────────────────────────────────── #
-
-    def _on_add_manual(self, *_):
+    def _on_ingest_manual(self, *_):
         path = self._path_input.text.strip()
         if not path:
             return
         self._path_input.text = ""
         self._ingest(path)
 
-    # ── shared ingest ─────────────────────────────────────────────── #
-
     def _ingest(self, path: str):
-        import os
-        name = os.path.basename(path)
-        self._set_status(f"Ingesting '{name}'...", (0.9, 0.8, 0.3, 1))
-        from rag.pipeline import ingest_document
-        ingest_document(path, on_done=self._on_ingest_done)
+        if not os.path.isfile(path):
+            self._set_status("File not found.", ok=False)
+            return
+        self._set_status(f"Ingesting {Path(path).name} ...", ok=True)
+        self.controller.ingest_document(path, on_done=self._on_ingest_done)
 
     @mainthread
-    def _on_ingest_done(self, success: bool, msg: str):
-        color = (0.4, 0.9, 0.4, 1) if success else (0.9, 0.3, 0.3, 1)
-        self._set_status(msg, color)
+    def _on_ingest_done(self, success: bool, message: str):
+        self._set_status(message, ok=success)
         if success:
-            self._refresh_list()
+            self._refresh_docs()
 
-    def _on_delete(self, doc_id: int):
-        from rag.db import delete_document
-        from rag.pipeline import retriever
-        delete_document(doc_id)
-        retriever.reload()
-        self._refresh_list()
-        self._set_status("Document removed.", (0.9, 0.6, 0.3, 1))
+    def _on_clear_all(self, *_):
+        ok, msg = self.controller.clear_documents()
+        self._set_status(msg, ok=ok)
+        self._refresh_docs()
 
-    def _set_status(self, text: str, color):
-        self._status.text  = text
-        self._status.color = color
+    # ------------------------------------------------------------------
+    # Rendering
+    # ------------------------------------------------------------------
+
+    def _on_docs_changed_event(self):
+        self._refresh_docs_mainthread()
+
+    @mainthread
+    def _refresh_docs_mainthread(self):
+        self._refresh_docs()
+
+    def _refresh_docs(self):
+        self._list.clear_widgets()
+        docs = self.controller.get_documents()
+        if not docs:
+            self._list.add_widget(Label(
+                text="No documents yet.\nAdd one to activate RAG mode.",
+                size_hint=(1, None),
+                height=dp(90),
+                halign="center",
+                valign="middle",
+                font_size=sp(13),
+                color=(0.65, 0.65, 0.68, 1),
+            ))
+            return
+
+        for doc in docs:
+            self._list.add_widget(_DocCard(
+                name=doc["name"],
+                chunks=doc["num_chunks"],
+                added_at=doc["added_at"],
+            ))
+
+    def _set_status(self, text: str, ok: bool):
+        self._status.text = text
+        self._status.color = (0.72, 0.92, 0.75, 1) if ok else (0.95, 0.55, 0.55, 1)
