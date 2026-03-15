@@ -1,8 +1,8 @@
 # Desktop / development dependencies
 kivy>=2.3.0
 pymupdf>=1.24.0          # PDF parsing (fitz)
-llama-cpp-python==0.2.90  # llama.cpp Python bindings (runs Gemma GGUF) - pinned for pre-built wheels
-huggingface-hub>=0.23.0   # download Gemma GGUF models from HuggingFace
+llama-cpp-python==0.2.90  # llama.cpp Python bindings (desktop/dev fallback)
+huggingface-hub>=0.23.0   # download Qwen/Nomic GGUF models from HuggingFace
 
 # No sentence-transformers — retrieval is pure BM25 + TF-IDF
 # No numpy required (stdlib only for maths)

@@ -49,7 +49,7 @@ def register_auto_download_callbacks(
         return
 
     # Race guard 2: foreground service already has llama-server running —
-    # skip extraction/download and connect immediately.
+    # skip download/startup and connect immediately.
     import urllib.request
     try:
         with urllib.request.urlopen(
@@ -72,7 +72,7 @@ def init() -> None:
 
 
 def _start_auto_download() -> None:
-    """Ensure Qwen + Nomic are on disk, then load Qwen and start Nomic server."""
+    """Ensure Qwen + Nomic are on disk (downloaded/cached), then load Qwen."""
     def _progress(frac: float, text: str):
         if _auto_dl_progress_cb:
             _auto_dl_progress_cb(frac, text)

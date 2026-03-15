@@ -16,6 +16,7 @@ from __future__ import annotations
 from kivy.uix.screenmanager import Screen
 from kivy.uix.boxlayout     import BoxLayout
 from kivy.uix.anchorlayout  import AnchorLayout
+from kivy.uix.relativelayout import RelativeLayout
 from kivy.uix.scrollview    import ScrollView
 from kivy.uix.label         import Label
 from kivy.uix.textinput     import TextInput
@@ -24,6 +25,7 @@ from kivy.uix.widget        import Widget
 from kivy.uix.progressbar   import ProgressBar
 from kivy.clock             import Clock, mainthread
 from kivy.metrics           import dp, sp
+from kivy.utils             import platform as kivy_platform
 from kivy.graphics          import Color, RoundedRectangle, Rectangle
 from kivy.animation         import Animation
 
@@ -33,7 +35,7 @@ _HDR_BG    = (0.078, 0.078, 0.078, 1)   # #141414  header strip
 _USER_BG   = (0.184, 0.184, 0.184, 1)   # #2f2f2f  user bubble
 _INPUT_BG  = (0.173, 0.173, 0.173, 1)   # #2c2c2c  text-input wrap
 _GREEN     = (0.098, 0.761, 0.490, 1)   # #19c37d  ChatGPT green
-_ADD_BG    = (0.220, 0.220, 0.220, 1)   # #383838  + button
+_ADD_BG    = (0.30, 0.30, 0.30, 1)      # #4d4d4d  + button (clearer visual separation)
 _WHITE     = (1,    1,    1,    1)
 _MUTED     = (0.55, 0.55, 0.58, 1)
 _DIVIDER   = (0.20, 0.20, 0.20, 1)
@@ -356,6 +358,17 @@ class ChatScreen(Screen):
         self._scroll_pending: bool                   = False
         self._model_ready:    bool                   = False   # True once LLM is loaded
         self._send_btn:       Button | None          = None    # ref for dimming
+        self._add_btn:        Button | None          = None
+        self._input_pill:     BoxLayout | None       = None
+        self._input_bar:      RelativeLayout | None  = None
+        self._composer_control_h: float              = 0.0
+        self._composer_side_pad_l: float             = 0.0
+        self._composer_side_pad_r: float             = 0.0
+        self._composer_gap: float                    = 0.0
+        self._composer_clearance: float              = 0.0
+        self._input_area:     BoxLayout | None       = None
+        self._input_bar_h:    float                  = float(round(dp(74)))
+        self._attach_strip_h: float                  = float(round(dp(80)))
         self._build_ui()
 
     # ---------------------------------------------------------------- #
@@ -392,6 +405,7 @@ class ChatScreen(Screen):
         self._msgs = BoxLayout(
             orientation="vertical",
             size_hint=(1, None), spacing=0,
+            padding=[0, 0, 0, 0],
         )
         self._msgs.bind(minimum_height=self._msgs.setter("height"))
         self._scroll.add_widget(self._msgs)
@@ -400,83 +414,114 @@ class ChatScreen(Screen):
         # Welcome message — text updated when model is ready
         self._welcome = self._add_msg(
             "Hello! I'm your offline AI assistant.\n\n"
-            "[b]Preparing model...[/b] This may take a moment on first launch.",
+            "[b]Preparing AI models...[/b] First launch may take a few minutes "
+            "while models download once.",
             role="assistant",
         )
 
         # ── Input area (attachment strip + bar) ─────────────────────── #
+        # Desktop DPI scaling can inflate controls too much; keep desktop
+        # composer sizing in raw px while preserving touch-friendly dp on Android.
+        use_density = kivy_platform == "android"
+        px = lambda n: float(round(dp(n) if use_density else n))
+        fs = lambda n: float(round(sp(n) if use_density else n))
+        control_h = px(38)
+        bar_vpad  = px(10)
+        side_pad_l = px(18)
+        side_pad_r = px(32)
+        bar_gap   = px(28)
+        clearance = px(18)
+        pill_hpad = px(16)
+        pill_vpad = px(6)
+        self._input_bar_h = control_h + (bar_vpad * 2)
+        self._composer_control_h = control_h
+        self._composer_side_pad_l = side_pad_l
+        self._composer_side_pad_r = side_pad_r
+        self._composer_gap = bar_gap
+        self._composer_clearance = clearance
+        print(
+            f"[ui] composer:v11 control_h={control_h} gap={bar_gap} "
+            f"clearance={clearance} left={side_pad_l} right={side_pad_r}"
+        )
+        self._set_msgs_bottom_padding(self._input_bar_h + dp(8))
+
         input_area = BoxLayout(
             orientation="vertical",
-            size_hint=(1, None), height=dp(74),
+            size_hint=(1, None), height=self._input_bar_h,
         )
+        self._input_area = input_area
         _paint(input_area, _HDR_BG)
 
         # Attachment preview strip — hidden until a file is picked
         self._attach_strip = BoxLayout(
             orientation="horizontal",
             size_hint=(1, None), height=0,
-            padding=[dp(10), dp(6), dp(10), dp(0)],
+            padding=[side_pad_l, pill_vpad, side_pad_r, 0],
         )
         _paint(self._attach_strip, _HDR_BG)
         input_area.add_widget(self._attach_strip)
 
-        bar = BoxLayout(
-            size_hint=(1, None), height=dp(74),
-            padding=[dp(10), dp(8), dp(10), dp(8)],
-            spacing=dp(8),
+        bar = RelativeLayout(
+            size_hint=(1, None),
+            height=self._input_bar_h,
         )
+        self._input_bar = bar
 
-        # [+] attach button
         add_btn = Button(
             text="+",
-            font_size=sp(26), bold=True,
-            size_hint=(None, None), size=(dp(48), dp(48)),
+            font_size=fs(20), bold=True,
+            size_hint=(None, None), size=(control_h, control_h),
             background_normal="", background_color=(0, 0, 0, 0),
             color=_WHITE,
         )
-        _paint(add_btn, _ADD_BG, radius=24)
+        _paint(add_btn, _ADD_BG, radius=px(11))
+        self._center_button_label(add_btn)
         add_btn.bind(on_release=self._on_attach)
+        self._add_btn = add_btn
         bar.add_widget(add_btn)
 
-        # Text input pill
+        # Input pill
         pill = BoxLayout(
-            size_hint=(1, 1),
-            padding=[dp(14), dp(8), dp(52), dp(8)],
+            size_hint=(None, None),
+            size=(px(220), control_h),
+            padding=[pill_hpad, pill_vpad, pill_hpad, pill_vpad],
         )
-        _paint(pill, _INPUT_BG, radius=22)
+        _paint(pill, _INPUT_BG, radius=px(4))
+        self._input_pill = pill
 
         self._input = TextInput(
             hint_text="Message...",
             multiline=False, size_hint=(1, 1),
-            font_size=sp(14.5),
+            font_size=fs(14.5),
             foreground_color=_WHITE,
             hint_text_color=_MUTED,
             background_color=(0, 0, 0, 0),
             cursor_color=_WHITE,
-            padding=[0, dp(4)],
+            padding=[0, 0, 0, 0],
         )
+        self._input.bind(size=self._center_input_text, font_size=self._center_input_text)
         self._input.bind(on_text_validate=self._on_send)
         pill.add_widget(self._input)
+        Clock.schedule_once(self._center_input_text, 0)
+        bar.add_widget(pill)
 
-        # [↑] send button overlaid on pill right
-        send_anc = AnchorLayout(
-            size_hint=(None, 1), width=dp(52),
-            anchor_x="center", anchor_y="center",
-        )
+        # Send button
         send_btn = Button(
-            text=">", font_size=sp(20), bold=True,
-            size_hint=(None, None), size=(dp(40), dp(40)),
+            text=">",
+            font_size=fs(16), bold=True,
+            size_hint=(None, None), size=(control_h, control_h),
             background_normal="", background_color=(0, 0, 0, 0),
             color=_WHITE,
         )
-        _paint(send_btn, _GREEN, radius=20)
+        _paint(send_btn, _GREEN, radius=px(11))
+        self._center_button_label(send_btn)
         send_btn.bind(on_release=self._on_send)
-        send_anc.add_widget(send_btn)
         self._send_btn = send_btn   # keep ref so we can dim it while loading
         send_btn.opacity = 0.4       # dimmed until model is ready
+        bar.add_widget(send_btn)
 
-        bar.add_widget(pill)
-        bar.add_widget(send_anc)
+        bar.bind(size=self._layout_input_controls, pos=self._layout_input_controls)
+        Clock.schedule_once(self._layout_input_controls, 0)
         input_area.add_widget(bar)
         root.add_widget(input_area)
 
@@ -485,6 +530,48 @@ class ChatScreen(Screen):
         # Register model-ready callbacks immediately (before init() fires)
         # so we never miss the done event due to a timing race.
         Clock.schedule_once(self._register_pipeline_callbacks, 0)
+
+    @staticmethod
+    def _center_button_label(btn: Button):
+        btn.halign = "center"
+        btn.valign = "middle"
+        btn.bind(size=lambda w, _: setattr(w, "text_size", w.size))
+
+    def _layout_input_controls(self, *_):
+        """Explicitly place composer controls to avoid any overlap/size drift."""
+        if not self._input_bar or not self._add_btn or not self._input_pill or not self._send_btn:
+            return
+
+        control_h = self._composer_control_h
+        side_pad_l = self._composer_side_pad_l
+        side_pad_r = self._composer_side_pad_r
+        gap = self._composer_gap
+        clearance = self._composer_clearance
+        y = (self._input_bar.height - control_h) / 2.0
+
+        self._add_btn.size = (control_h, control_h)
+        self._send_btn.size = (control_h, control_h)
+        self._add_btn.pos = (side_pad_l, y)
+        send_x = max(0.0, self._input_bar.width - side_pad_r - control_h)
+        self._send_btn.pos = (send_x, y)
+
+        pill_x = side_pad_l + control_h + gap + clearance
+        right_edge = self._send_btn.x - gap - clearance
+        pill_w = max(float(round(dp(140))), right_edge - pill_x)
+        self._input_pill.pos = (pill_x, y)
+        self._input_pill.size = (pill_w, control_h)
+
+    def _center_input_text(self, *_):
+        if not self._input:
+            return
+        pad_top = max(0.0, (self._input.height - self._input.line_height) / 2.0)
+        self._input.padding = [0, pad_top, 0, 0]
+
+    def _set_msgs_bottom_padding(self, bottom_pad: float):
+        """Reserve visual space so chat content never sits under the composer."""
+        if not hasattr(self, "_msgs") or self._msgs is None:
+            return
+        self._msgs.padding = [0, 0, 0, bottom_pad]
 
     # ---------------------------------------------------------------- #
     #  Model progress / ready callbacks                                 #
@@ -501,15 +588,15 @@ class ChatScreen(Screen):
     def _on_model_progress(self, frac: float, text: str):
         # Determine which stage we are in based on the progress text
         txt_lo = text.lower()
-        if "extract" in txt_lo:
-            stage = "[b]Extracting model from APK...[/b]"
-            icon  = "\u2699\ufe0f"
-        elif "start" in txt_lo or "engine" in txt_lo or "loading model" in txt_lo:
+        if "start" in txt_lo or "engine" in txt_lo or "loading model" in txt_lo:
             stage = "[b]Starting AI engine...[/b]"
             icon  = "\u26a1"
         elif "connect" in txt_lo or "hugging" in txt_lo or "download" in txt_lo or "/" in text:
-            stage = "[b]Downloading model...[/b]"
+            stage = "[b]Downloading AI models (one-time)...[/b]"
             icon  = "\u2b07\ufe0f"
+        elif "cached" in txt_lo:
+            stage = "[b]Using cached AI models...[/b]"
+            icon  = "\u2714\ufe0f"
         else:
             stage = "[b]Preparing...[/b]"
             icon  = "\u23f3"
@@ -544,7 +631,7 @@ class ChatScreen(Screen):
             self._model_ready = False
             self._welcome._lbl.text = (
                 f"[color=ff5555][WARN] Model failed to load:[/color]\n{message}\n\n"
-                "Check your connection and restart the app."
+                "Check your internet connection for first launch, then restart the app."
             )
 
     # ---------------------------------------------------------------- #
@@ -731,9 +818,11 @@ class ChatScreen(Screen):
         self._attach_strip.add_widget(card)
 
         # Expand the strip to show the card
-        self._attach_strip.height = dp(80)
+        self._attach_strip.height = self._attach_strip_h
         # Grow the whole input_area
-        self._attach_strip.parent.height = dp(154)
+        if self._input_area is not None:
+            self._input_area.height = self._input_bar_h + self._attach_strip_h
+            self._set_msgs_bottom_padding(self._input_area.height + dp(8))
 
     @mainthread
     def _remove_attachment(self):
@@ -742,7 +831,9 @@ class ChatScreen(Screen):
         self._attach_card    = None
         self._attach_strip.clear_widgets()
         self._attach_strip.height = 0
-        self._attach_strip.parent.height = dp(74)
+        if self._input_area is not None:
+            self._input_area.height = self._input_bar_h
+            self._set_msgs_bottom_padding(self._input_area.height + dp(8))
 
     def _start_ingest(self, path: str, fname: str):
         card = DocStatusCard(fname)

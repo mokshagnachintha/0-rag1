@@ -4,7 +4,7 @@ main.py — Offline RAG App entry point (Kivy / Android).
 Single-screen design: one chat interface.
   • Tap + to attach a PDF or TXT document (RAG mode activates automatically)
   • Otherwise chat freely with the AI
-  • Model is bundled in the APK — extracted to device storage on first launch
+  • On first launch, models are downloaded once and cached in device storage
 """
 
 # ── Kivy config BEFORE any other kivy import ──────────────────────── #
@@ -17,7 +17,11 @@ Config.set("kivy", "window_icon", "assets/icon.png")
 
 # Keep input bar visible above the soft keyboard on Android
 from kivy.core.window import Window
-Window.softinput_mode = "below_target"
+from kivy.utils import platform as kivy_platform
+if kivy_platform == "android":
+    Window.softinput_mode = "below_target"
+else:
+    Window.softinput_mode = "pan"
 
 from kivy.app import App
 from kivy.uix.screenmanager import ScreenManager, FadeTransition
@@ -83,7 +87,7 @@ class RAGApp(App):
         # it stays alive even when the app is backgrounded.
         _start_android_service()
 
-        # Init DB + retriever, then kick off model loading (bundled or download)
+        # Init DB + retriever, then kick off one-time model download/loading.
         # Delay by 0.3 s so the ChatScreen's pipeline callbacks are registered
         # first — prevents a race where models load before the UI can hear about it.
         Clock.schedule_once(lambda *_: init(), 0.3)

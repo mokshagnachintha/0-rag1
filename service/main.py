@@ -7,7 +7,7 @@ the user never waits for the 45-90 s cold-start again.
 
 Lifecycle:
   1. Service is started by the main app on first launch.
-  2. It waits for model files to be extracted (main app does that).
+  2. It waits for model files to be downloaded (main app does that).
   3. Starts Qwen server (port 8082) + Nomic server (port 8083).
   4. Stays alive forever, restarting servers if they crash.
   5. Android OS keeps it alive because it is a foreground service
@@ -176,20 +176,25 @@ MIN_QWEN_BYTES  = 100 * 1024 * 1024   # 100 MB sanity check
 MIN_NOMIC_BYTES = 10  * 1024 * 1024   # 10 MB
 
 
-def _wait_for_models(qwen_path: str, nomic_path: str, timeout: int = 600):
-    """Block until Qwen model file is on disk (main app extracts it).
+def _wait_for_models(
+    qwen_path: str,
+    nomic_path: str,
+    timeout: int | None = None,
+):
+    """Block until Qwen model file is on disk (main app downloads it).
     Nomic is started lazily by the app on first PDF upload.
     """
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    deadline = (time.time() + timeout) if timeout and timeout > 0 else None
+    while True:
         qwen_ok = os.path.isfile(qwen_path) and os.path.getsize(qwen_path) > MIN_QWEN_BYTES
         if qwen_ok:
             print("[service] Qwen model file ready.")
             return True
         print("[service] Waiting for Qwen model file…")
+        if deadline is not None and time.time() >= deadline:
+            print("[service] Timed out waiting for Qwen model file.")
+            return False
         time.sleep(5)
-    print("[service] Timed out waiting for Qwen model file.")
-    return False
 
 
 def main():
