@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import shutil
+import ssl
 import threading
 import time
 import urllib.error
@@ -168,6 +169,19 @@ def _hf_resolve_url(repo_id: str, filename: str, revision: str) -> str:
     return f"https://huggingface.co/{repo_id}/resolve/{revision}/{filename}?download=true"
 
 
+def _tls_context() -> ssl.SSLContext:
+    """
+    Build a TLS context that prefers certifi's CA bundle (reliable on Android),
+    then falls back to system defaults.
+    """
+    try:
+        import certifi
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
+
+
 def _download_via_http(
     repo_id: str,
     filename: str,
@@ -183,6 +197,7 @@ def _download_via_http(
     url = _hf_resolve_url(repo_id, filename, revision)
     part = dest + ".part"
     os.makedirs(os.path.dirname(dest), exist_ok=True)
+    tls_ctx = _tls_context()
 
     start = 0
     if os.path.isfile(part):
@@ -196,7 +211,7 @@ def _download_via_http(
         headers["Range"] = f"bytes={start}-"
 
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=30, context=tls_ctx) as resp:
         status = getattr(resp, "status", 200)
         content_len = int(resp.headers.get("Content-Length", "0") or "0")
 
