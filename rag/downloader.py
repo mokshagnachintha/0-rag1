@@ -27,22 +27,25 @@ from typing import Callable, Optional
 
 QWEN_MODEL: dict = {
     "id": "qwen",
-    "label": "Qwen 2.5 1.5B Instruct Q4_K_M (~1.1 GB)",
-    "repo_id": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
-    "filename": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+    "label": "Qwen 2.5 1.5B Instruct Compressed (~1.12 GB)",
+    "repo_id": "cracker0935/Compressed_RAG_Models",
+    "filename": "qwen2.5-1.5b-instruct-compressed.gguf",
     "revision": "main",
     "size_mb": 1120,
     "min_bytes": 500 * 1024 * 1024,
+    "url": "https://huggingface.co/cracker0935/Compressed_RAG_Models/resolve/main/qwen2.5-1.5b-instruct-compressed.gguf",
 }
+
 
 NOMIC_MODEL: dict = {
     "id": "nomic",
-    "label": "Nomic Embed Text v1.5 Q4_K_M (~80 MB)",
-    "repo_id": "nomic-ai/nomic-embed-text-v1.5-GGUF",
-    "filename": "nomic-embed-text-v1.5.Q4_K_M.gguf",
+    "label": "Nomic Embed Text v1.5 Compressed (~84 MB)",
+    "repo_id": "cracker0935/Compressed_RAG_Models",
+    "filename": "nomic-embed-text-v1.5-compressed.gguf",
     "revision": "main",
-    "size_mb": 80,
+    "size_mb": 84,
     "min_bytes": 30 * 1024 * 1024,
+    "url": "https://huggingface.co/cracker0935/Compressed_RAG_Models/resolve/main/nomic-embed-text-v1.5-compressed.gguf",
 }
 
 MOBILE_MODELS: list[dict] = [QWEN_MODEL, NOMIC_MODEL]
