@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .chunker import process_document
+from .debug_logger import debug_log
 from .db import (
     get_conn,
     init_db,
@@ -57,6 +58,8 @@ _latest_bootstrap_state: dict = {
 }
 _service_probe_lock = threading.Lock()
 _service_probe_active = False
+_last_bootstrap_signature = ""
+_last_downloader_state_signature = ""
 
 
 def _env_truthy(name: str) -> bool:
@@ -69,13 +72,15 @@ def _start_android_service_best_effort() -> None:
     if not os.environ.get("ANDROID_PRIVATE"):
         return
     try:
+        debug_log("pipeline.service", "Best-effort Android service start attempt")
         from android import AndroidService  # type: ignore
 
         svc = AndroidService("O-RAG AI Engine", "AI engine running in background")
         svc.start("start")
+        debug_log("pipeline.service", "Best-effort Android service start call issued")
     except Exception:
         # Keep silent here; probe state UI will reflect actual health.
-        pass
+        debug_log("pipeline.service", "Best-effort Android service start failed", level="WARN")
 
 
 def _service_qwen_ready(wait_seconds: float = 0.0, per_try_timeout: float = 0.35) -> bool:
@@ -110,16 +115,19 @@ def register_auto_download_callbacks(
     _auto_dl_progress_cb = on_progress
     _auto_dl_done_cb = on_done
     _auto_dl_state_cb = on_state
+    debug_log("pipeline.callbacks", "Registered bootstrap callbacks")
 
     if on_state:
         on_state(copy.deepcopy(_latest_bootstrap_state))
 
     if on_done and llm.is_loaded():
+        debug_log("pipeline.callbacks", "llm already loaded at callback registration")
         on_done(True, "Models ready: Qwen + Nomic")
         return
 
     # Avoid even short socket checks on UI thread; do this in background.
     def _service_probe():
+        debug_log("pipeline.service_probe", "Initial non-blocking service health probe started")
         if _service_qwen_ready(wait_seconds=0.0):
             llm._backend = "llama_server"
             llm._model_path = model_dest_path(QWEN_MODEL["filename"])
@@ -132,6 +140,9 @@ def register_auto_download_callbacks(
             )
             if on_done:
                 on_done(True, "Models ready: Qwen + Nomic (service)")
+            debug_log("pipeline.service_probe", "Service was already healthy")
+        else:
+            debug_log("pipeline.service_probe", "Service not healthy yet")
 
     threading.Thread(target=_service_probe, daemon=True).start()
 
@@ -146,6 +157,7 @@ def _set_bootstrap_state(
     nomic_frac: Optional[float] = None,
     nomic_status: Optional[str] = None,
 ) -> None:
+    global _last_bootstrap_signature
     if overall_status is not None:
         _latest_bootstrap_state["overall_status"] = overall_status
     if overall_text is not None:
@@ -160,6 +172,17 @@ def _set_bootstrap_state(
         _latest_bootstrap_state["models"]["nomic"]["fraction"] = max(0.0, min(1.0, nomic_frac))
     if nomic_status is not None:
         _latest_bootstrap_state["models"]["nomic"]["status"] = nomic_status
+
+    sig = (
+        f"{_latest_bootstrap_state.get('overall_status','')}"
+        f"|{_latest_bootstrap_state.get('overall_text','')}"
+        f"|q:{_latest_bootstrap_state.get('models',{}).get('qwen',{}).get('status','')}"
+        f"|n:{_latest_bootstrap_state.get('models',{}).get('nomic',{}).get('status','')}"
+    )
+    if sig != _last_bootstrap_signature:
+        _last_bootstrap_signature = sig
+        debug_log("pipeline.bootstrap", sig)
+
     if _auto_dl_state_cb:
         _auto_dl_state_cb(copy.deepcopy(_latest_bootstrap_state))
 
@@ -181,8 +204,10 @@ def _wait_for_service_backend(
     global _service_probe_active
     with _service_probe_lock:
         if _service_probe_active:
+            debug_log("pipeline.engine", "Engine probe already active; skipping duplicate")
             return
         _service_probe_active = True
+    debug_log("pipeline.engine", f"Starting service wait loop (timeout={timeout_seconds}s)")
 
     def _run():
         global _service_probe_active
@@ -214,12 +239,14 @@ def _wait_for_service_backend(
                     _emit_progress(1.0, "Offline ready. AI engine connected.")
                     if _auto_dl_done_cb:
                         _auto_dl_done_cb(True, "Models ready: Qwen + Nomic")
+                    debug_log("pipeline.engine", "Service health probe succeeded")
                     return
 
                 attempt += 1
                 if attempt % 3 == 0:
                     # Service-first policy: reassert service start during long waits.
                     _start_android_service_best_effort()
+                debug_log("pipeline.engine", f"Service probe retry #{attempt}")
                 msg = f"Starting AI engine... retry {attempt}"
                 _set_bootstrap_state(
                     overall_status="starting_engine",
@@ -231,6 +258,7 @@ def _wait_for_service_backend(
                 delay = min(delay * 1.5, 10.0)
 
             if os.environ.get("ANDROID_PRIVATE") and allow_android_fallback:
+                debug_log("pipeline.engine", "Service probe timed out; activating local fallback")
                 _set_bootstrap_state(
                     overall_status="starting_engine",
                     overall_text="Service not reachable. Starting local AI fallback...",
@@ -263,6 +291,7 @@ def _wait_for_service_backend(
                         )
                         if _auto_dl_done_cb:
                             _auto_dl_done_cb(True, "Models ready: Qwen + Nomic (local fallback)")
+                        debug_log("pipeline.engine", "Local fallback succeeded")
                         return
 
                     _set_bootstrap_state(
@@ -272,6 +301,7 @@ def _wait_for_service_backend(
                     )
                     if _auto_dl_done_cb:
                         _auto_dl_done_cb(False, f"{fail_message}\nFallback error: {msg}")
+                    debug_log("pipeline.engine", f"Local fallback failed: {msg}", level="ERROR")
 
                 load_model(
                     qwen_path,
@@ -287,9 +317,11 @@ def _wait_for_service_backend(
             )
             if _auto_dl_done_cb:
                 _auto_dl_done_cb(False, fail_message)
+            debug_log("pipeline.engine", "Service probe failed with no fallback", level="ERROR")
         finally:
             with _service_probe_lock:
                 _service_probe_active = False
+            debug_log("pipeline.engine", "Engine probe thread finished")
 
     threading.Thread(target=_run, daemon=True).start()
 
@@ -297,33 +329,45 @@ def _wait_for_service_backend(
 def retry_engine_probe() -> None:
     """Retry Android service probe after a bootstrap-engine failure."""
     qwen_path = model_dest_path(QWEN_MODEL["filename"])
+    debug_log("pipeline.engine", "Manual retry requested")
     if not os.path.isfile(qwen_path):
         if _auto_dl_done_cb:
             _auto_dl_done_cb(False, "Qwen model file missing. Re-run first-launch download.")
+        debug_log("pipeline.engine", "Retry failed: qwen file missing", level="ERROR")
         return
     _wait_for_service_backend(qwen_path)
 
 
 def init() -> None:
     """Call once at app start: set up DB + retriever + model bootstrap."""
+    debug_log("pipeline.init", "init() started")
     init_db()
+    debug_log("pipeline.init", "Database initialized")
     retriever.reload()
+    debug_log("pipeline.init", "Retriever loaded")
     _start_auto_download()
 
 
 def _start_auto_download() -> None:
     """Ensure Qwen + Nomic are on disk, then load/connect Qwen."""
+    debug_log("pipeline.bootstrap", "Starting auto-download bootstrap")
 
     def _progress(frac: float, text: str):
         _emit_progress(frac, text)
 
     def _state(state: dict):
+        global _last_downloader_state_signature
         _latest_bootstrap_state.update(copy.deepcopy(state))
+        sig = f"{state.get('overall_status','')}|{state.get('overall_text','')}"
+        if sig != _last_downloader_state_signature:
+            _last_downloader_state_signature = sig
+            debug_log("pipeline.downloader", sig)
         if _auto_dl_state_cb:
             _auto_dl_state_cb(copy.deepcopy(_latest_bootstrap_state))
 
     def _done(success: bool, message: str):
         qwen_path = model_dest_path(QWEN_MODEL["filename"])
+        debug_log("pipeline.bootstrap", f"Downloader completion: success={success} message={message}")
 
         if not success:
             if _auto_dl_done_cb:
@@ -338,6 +382,7 @@ def _start_auto_download() -> None:
             )
             if _auto_dl_done_cb:
                 _auto_dl_done_cb(True, "Models ready: Qwen + Nomic")
+            debug_log("pipeline.bootstrap", "LLM already loaded after bootstrap")
             return
 
         # Android policy: service-first only. Do not fallback to in-app load.
@@ -345,6 +390,10 @@ def _start_auto_download() -> None:
             _start_android_service_best_effort()
             # Preserve service-first startup, but avoid permanent retry dead-ends.
             # Set ORAG_ANDROID_SERVICE_ONLY=1 to force strict service-only mode.
+            debug_log(
+                "pipeline.bootstrap",
+                f"Android service-first path selected (strict={_env_truthy('ORAG_ANDROID_SERVICE_ONLY')})",
+            )
             _wait_for_service_backend(
                 qwen_path,
                 allow_android_fallback=not _env_truthy("ORAG_ANDROID_SERVICE_ONLY"),
@@ -364,6 +413,7 @@ def _start_auto_download() -> None:
             )
             if _auto_dl_done_cb:
                 _auto_dl_done_cb(True, "Models ready: Qwen + Nomic")
+            debug_log("pipeline.bootstrap", "Desktop path connected to existing service")
             return
 
         # Fallback: load/connect from app process.
@@ -372,6 +422,7 @@ def _start_auto_download() -> None:
             on_progress=_progress,
             on_done=lambda ok, msg: (_auto_dl_done_cb(ok, msg) if _auto_dl_done_cb else None),
         )
+        debug_log("pipeline.bootstrap", "Desktop/app fallback load_model invoked")
 
     auto_download_default(on_progress=_progress, on_done=_done, on_state=_state)
 

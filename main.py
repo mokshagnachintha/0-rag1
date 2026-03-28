@@ -15,6 +15,7 @@ os.environ.setdefault("KIVY_LOG_LEVEL", "warning")
 # (Android builds are unaffected.)
 if not os.environ.get("ANDROID_PRIVATE"):
     os.environ.setdefault("ORAG_FORCE_BOOTSTRAP_DOWNLOAD", "1")
+os.environ.setdefault("ORAG_DEBUG_LOGGER", "1")
 
 from kivy.config import Config
 Config.set("kivy", "window_icon", "assets/icon.png")
@@ -37,6 +38,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from ui.screens.chat_screen import ChatScreen
 from rag.pipeline           import init
+from rag.debug_logger       import debug_log
 
 
 _SERVICE_START_LOCK = threading.Lock()
@@ -47,6 +49,7 @@ def _global_exception_handler(exc_type, exc_value, exc_tb):
     """Log unhandled exceptions instead of silently crashing."""
     msg = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
     print(f"[CRASH] Unhandled exception:\n{msg}")
+    debug_log("app.crash", msg, level="ERROR")
     # Write to Android log file if possible
     priv = os.environ.get("ANDROID_PRIVATE", "")
     if priv:
@@ -66,15 +69,19 @@ def _start_android_service():
     global _SERVICE_STARTED
     with _SERVICE_START_LOCK:
         if _SERVICE_STARTED:
+            debug_log("app.service", "Android service start skipped (already started)")
             return
+    debug_log("app.service", "Attempting Android foreground service start")
     try:
         from android import AndroidService  # type: ignore
         svc = AndroidService("O-RAG AI Engine", "AI engine running in background")
         svc.start("start")
         _SERVICE_STARTED = True
         print("[main] Android foreground service started.")
+        debug_log("app.service", "Android foreground service started")
     except Exception as exc:
         print(f"[main] Service start skipped: {exc}")
+        debug_log("app.service", f"Android service start skipped: {exc}", level="WARN")
 
 
 class RAGApp(App):
@@ -84,12 +91,15 @@ class RAGApp(App):
         """Run heavy startup work off the UI thread to avoid ANR/freezes."""
         def _run():
             try:
+                debug_log("app.startup", "pipeline.init() started")
                 init()
+                debug_log("app.startup", "pipeline.init() finished")
             except Exception:
                 _global_exception_handler(*sys.exc_info())
         threading.Thread(target=_run, daemon=True).start()
 
     def build(self):
+        debug_log("app.startup", "RAGApp.build() called")
         root = BoxLayout(orientation="vertical")
         with root.canvas.before:
             Color(0.102, 0.102, 0.102, 1)   # #1a1a1a
@@ -108,14 +118,17 @@ class RAGApp(App):
             lambda *_: _start_android_service(),
             0.05,
         )
+        debug_log("app.startup", "Scheduled Android service start task")
 
         # Init DB + retriever + model bootstrap in background thread.
         # Delay by 0.3 s so the ChatScreen's pipeline callbacks are registered
         # first — prevents a race where models load before the UI can hear about it.
         Clock.schedule_once(self._start_pipeline_init_async, 0.3)
+        debug_log("app.startup", "Scheduled async pipeline init task")
         return root
 
 
 if __name__ == "__main__":
+    debug_log("app.startup", "Application entrypoint invoked")
     RAGApp().run()
 
