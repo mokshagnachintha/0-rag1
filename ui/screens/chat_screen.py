@@ -1,15 +1,15 @@
 """
-chat_screen.py — Unified single-screen chat + document interface.
+chat_screen.py - Unified single-screen chat + document interface.
 
 Design:
-  • Header: "Offline RAG" title only — no tabs or mode toggles.
-  • Chat area inheriting ChatGPT dark style.
-  • Bottom bar: [+] attach  |  [text input pill]  |  [↑ send]
-  • Tap + to pick a PDF/TXT via the native file browser.
+  - Header: "Offline RAG" title only - no tabs or mode toggles.
+  - Chat area inheriting ChatGPT dark style.
+  - Bottom bar: [+] attach  |  [text input pill]  |  [> send]
+  - Tap + to pick a PDF/TXT via the native file browser.
     - Document ingestion progress shown inline as a status card.
     - Once any doc is loaded the AI auto-answers from it (RAG mode).
     - With no docs, the AI just chats freely (direct mode).
-  • Model download / loading progress shown in the welcome message.
+  - Model download / loading progress shown in the welcome message.
 """
 from __future__ import annotations
 import time
@@ -30,7 +30,7 @@ from kivy.animation         import Animation
 from kivy.utils             import escape_markup
 from kivy.effects.scroll    import ScrollEffect
 
-# ── Palette ───────────────────────────────────────────────────────── #
+# Palette
 _BG        = (0.102, 0.102, 0.102, 1)   # #1a1a1a  page background
 _HDR_BG    = (0.078, 0.078, 0.078, 1)   # #141414  header strip
 _USER_BG   = (0.184, 0.184, 0.184, 1)   # #2f2f2f  user bubble
@@ -191,7 +191,7 @@ class AttachmentPreviewCard(BoxLayout):
         except Exception:
             size_txt = ""
 
-        # ── PDF/TXT icon box ────────────────────────────────────────── #
+        # PDF/TXT icon box
         icon_box = BoxLayout(
             size_hint=(None, None), size=(dp(42), dp(42)),
         )
@@ -205,12 +205,12 @@ class AttachmentPreviewCard(BoxLayout):
         icon_box.add_widget(icon_lbl)
         self.add_widget(icon_box)
 
-        # ── Filename + size ─────────────────────────────────────────── #
+        # Filename + size
         info = BoxLayout(
             orientation="vertical", size_hint=(1, 1), spacing=dp(2),
         )
         # Truncate long filenames
-        display = fname if len(fname) <= 22 else fname[:19] + "…"
+        display = fname if len(fname) <= 22 else fname[:19] + "..."
         display = escape_markup(display)
         name_lbl = Label(
             text=f"[b]{display}[/b]", markup=True,
@@ -221,7 +221,7 @@ class AttachmentPreviewCard(BoxLayout):
         name_lbl.bind(size=lambda w, _: setattr(w, "text_size", (w.width, None)))
 
         type_lbl = Label(
-            text=f"{ext} · {size_txt}" if size_txt else ext,
+            text=f"{ext} - {size_txt}" if size_txt else ext,
             font_size=sp(10.5), color=_MUTED,
             halign="left", valign="top",
             size_hint_y=None, height=dp(18),
@@ -232,9 +232,9 @@ class AttachmentPreviewCard(BoxLayout):
         info.add_widget(type_lbl)
         self.add_widget(info)
 
-        # ── × remove button ─────────────────────────────────────────── #
+        # x remove button
         x_btn = Button(
-            text="✕", font_size=sp(13),
+            text="x", font_size=sp(13),
             size_hint=(None, None), size=(dp(24), dp(24)),
             background_normal="", background_color=(0, 0, 0, 0),
             color=_MUTED,
@@ -276,7 +276,7 @@ class DocStatusCard(BoxLayout):
         _paint(inner, _DOC_CARD, radius=14)
 
         self._title = Label(
-            text=f"[b]📄  {escape_markup(filename)}[/b]",
+            text=f"[b]DOC  {escape_markup(filename)}[/b]",
             markup=True,
             color=_WHITE, font_size=sp(13),
             size_hint_y=None, height=dp(22),
@@ -285,7 +285,7 @@ class DocStatusCard(BoxLayout):
         self._title.bind(size=lambda w, _: setattr(w, "text_size", (w.width, None)))
 
         self._status = Label(
-            text="Indexing…",
+            text="Indexing...",
             color=_GREEN, font_size=sp(12),
             size_hint_y=None, height=dp(18),
             halign="left", valign="middle",
@@ -308,13 +308,12 @@ class DocStatusCard(BoxLayout):
     def set_done(self, success: bool, message: str):
         self._bar.value = 100 if success else 0
         col  = "00cc66" if success else "ff5555"
-        icon = "✅" if success else "❌"
-        self._status.text   = f"[color={col}]{icon}  {message}[/color]"
+        self._status.text   = f"[color={col}]{message}[/color]"
         self._status.markup = True
 
 
 # ------------------------------------------------------------------ #
-#  Typing indicator  ● ● ●                                            #
+#  Typing indicator  . . .                                            #
 # ------------------------------------------------------------------ #
 
 class _TypingIndicator(BoxLayout):
@@ -328,7 +327,7 @@ class _TypingIndicator(BoxLayout):
         self._dots: list[Label] = []
         for _ in range(3):
             d = Label(
-                text="●", font_size=sp(10), color=_MUTED,
+                text=".", font_size=sp(10), color=_MUTED,
                 size_hint=(None, None), size=(dp(14), dp(14)),
             )
             self._dots.append(d)
@@ -353,8 +352,8 @@ class ChatScreen(Screen):
     """
     Single-screen UI.  No tab bar.
     Internal mode tracked automatically:
-      _has_docs=True  →  RAG (answer from indexed document chunks)
-      _has_docs=False →  direct LLM chat with rolling history
+      _has_docs=True  ->  RAG (answer from indexed document chunks)
+      _has_docs=False ->  direct LLM chat with rolling history
     """
 
     def __init__(self, **kw):
@@ -389,7 +388,7 @@ class ChatScreen(Screen):
         root = BoxLayout(orientation="vertical")
         _paint(root, _BG)
 
-        # ── Header ──────────────────────────────────────────────────── #
+        # Header
         hdr = BoxLayout(
             size_hint=(1, None), height=dp(54),
             padding=[dp(16), dp(0)],
@@ -406,7 +405,7 @@ class ChatScreen(Screen):
         _paint(sep, _DIVIDER)
         root.add_widget(sep)
 
-        # ── Message list ─────────────────────────────────────────────── #
+        # Message list
         self._scroll = ScrollView(
             size_hint=(1, 1), do_scroll_x=False, bar_width=dp(3),
             effect_cls=ScrollEffect,
@@ -423,21 +422,21 @@ class ChatScreen(Screen):
         self._scroll.add_widget(self._msgs)
         root.add_widget(self._scroll)
 
-        # Welcome message — text updated when model is ready
+        # Welcome message - text updated when model is ready
         self._welcome = self._add_msg(
             "Hello! I'm your offline AI assistant.\n\n"
-            "⏳  [b]Downloading AI models (first launch only)...[/b]",
+            "[b]Downloading AI models (first launch only)...[/b]",
             role="assistant",
         )
 
-        # ── Input area (attachment strip + bar) ─────────────────────── #
+        # Input area (attachment strip + bar)
         input_area = BoxLayout(
             orientation="vertical",
             size_hint=(1, None), height=dp(74),
         )
         _paint(input_area, _HDR_BG)
 
-        # Attachment preview strip — hidden until a file is picked
+        # Attachment preview strip - hidden until a file is picked
         self._attach_strip = BoxLayout(
             orientation="horizontal",
             size_hint=(1, None), height=0,
@@ -472,7 +471,7 @@ class ChatScreen(Screen):
         _paint(pill, _INPUT_BG, radius=22)
 
         self._input = TextInput(
-            hint_text="Message…",
+            hint_text="Message...",
             multiline=False, size_hint=(1, 1),
             font_size=sp(14.5),
             foreground_color=_WHITE,
@@ -484,13 +483,13 @@ class ChatScreen(Screen):
         self._input.bind(on_text_validate=self._on_send)
         pill.add_widget(self._input)
 
-        # [↑] send button overlaid on pill right
+        # [>] send button overlaid on pill right
         send_anc = AnchorLayout(
             size_hint=(None, 1), width=dp(52),
             anchor_x="center", anchor_y="center",
         )
         send_btn = Button(
-            text="↑", font_size=sp(20), bold=True,
+            text=">", font_size=sp(20), bold=True,
             size_hint=(None, None), size=(dp(40), dp(40)),
             background_normal="", background_color=(0, 0, 0, 0),
             color=_WHITE,
@@ -528,17 +527,13 @@ class ChatScreen(Screen):
         # Determine which stage we are in based on the progress text
         txt_lo = text.lower()
         if "offline ready" in txt_lo or "cached" in txt_lo:
-            stage = "\u2705  [b]Offline ready[/b]"
-            icon  = "\u2705"
+            stage = "[b]Offline ready[/b]"
         elif "start" in txt_lo or "engine" in txt_lo or "loading model" in txt_lo:
-            stage = "\u26a1  [b]Starting AI engine...[/b]"
-            icon  = "\u26a1"
+            stage = "[b]Starting AI engine...[/b]"
         elif "connect" in txt_lo or "hugging" in txt_lo or "download" in txt_lo or "/" in text:
-            stage = "\u2b07\ufe0f  [b]Downloading AI models (first launch only)...[/b]"
-            icon  = "\u2b07\ufe0f"
+            stage = "[b]Downloading AI models (first launch only)...[/b]"
         else:
-            stage = "\u23f3  [b]Preparing AI models...[/b]"
-            icon  = "\u23f3"
+            stage = "[b]Preparing AI models...[/b]"
 
         pct    = int(min(frac, 0.999) * 100)
 
@@ -560,8 +555,8 @@ class ChatScreen(Screen):
         self._last_model_pct = pct
         self._last_model_update_at = now
 
-        filled = "\u2588" * (pct // 10)
-        empty  = "\u2591" * (10 - pct // 10)
+        filled = "#" * (pct // 10)
+        empty  = "-" * (10 - pct // 10)
         bar    = f"[color=19c37d]{filled}[/color][color=555555]{empty}[/color]"
 
         self._welcome._lbl.text = (
@@ -579,9 +574,9 @@ class ChatScreen(Screen):
                 self._send_btn.color = _WHITE
                 self._send_btn.opacity = 1.0
             self._welcome._lbl.text = (
-                "👋  [b]Offline ready. How can I assist you today?[/b]\n\n"
-                "• Just type a message to chat with me.\n"
-                "• Tap [b]＋[/b] to attach a [b]PDF[/b] or [b]TXT[/b] — "
+                "[b]Offline ready. How can I assist you today?[/b]\n\n"
+                "- Just type a message to chat with me.\n"
+                "- Tap [b]+[/b] to attach a [b]PDF[/b] or [b]TXT[/b] - "
                 "I'll answer questions about its content."
             )
             # Keep the model-ready callback lightweight to reduce ANR risk.
@@ -589,7 +584,7 @@ class ChatScreen(Screen):
         else:
             self._model_ready = False
             self._welcome._lbl.text = (
-                f"[color=ff5555]⚠  Model failed to load:[/color]\n{message}\n\n"
+                f"[color=ff5555]Model failed to load:[/color]\n{message}\n\n"
                 "Network is required only for first-time setup. Check your connection and retry."
             )
 
@@ -601,7 +596,7 @@ class ChatScreen(Screen):
         """Ask for storage permissions on Android before opening picker."""
         import os
         if not os.environ.get("ANDROID_PRIVATE"):
-            return  # desktop — no-op
+            return  # desktop - no-op
         if self._perm_requested:
             return
         self._perm_requested = True
@@ -614,7 +609,7 @@ class ChatScreen(Screen):
             except Exception:
                 pass
             if sdk >= 33:
-                # Android 13+ — READ_MEDIA_IMAGES covers images;
+                # Android 13+ - READ_MEDIA_IMAGES covers images;
                 # documents/PDFs still come through SAF so no extra perm needed.
                 request_permissions([
                     Permission.READ_MEDIA_IMAGES,
@@ -698,7 +693,7 @@ class ChatScreen(Screen):
             import traceback; traceback.print_exc()
             self._picker_open = False
             self._add_msg(
-                f"[color=ff5555]\u274c  Could not open file picker:[/color]\n{e}",
+                f"[color=ff5555]Could not open file picker:[/color]\n{e}",
                 role="assistant",
             )
 
@@ -727,7 +722,7 @@ class ChatScreen(Screen):
         except Exception as e:
             import traceback; traceback.print_exc()
             self._add_msg(
-                f"[color=ff5555]\u274c  Could not read file URI:[/color]\n{e}",
+                f"[color=ff5555]Could not read file URI:[/color]\n{e}",
                 role="assistant",
             )
 
@@ -740,7 +735,7 @@ class ChatScreen(Screen):
         except Exception as e:
             import traceback; traceback.print_exc()
             self._add_msg(
-                f"[color=ff5555]\u274c  Could not open file:[/color]\n{e}",
+                f"[color=ff5555]Could not open file:[/color]\n{e}",
                 role="assistant",
             )
 
@@ -759,7 +754,7 @@ class ChatScreen(Screen):
             self._picker_open = False
             self._add_msg(
                 "File picker unavailable on this device.\n"
-                "Type the [b]full path[/b] to your file and send it — "
+                "Type the [b]full path[/b] to your file and send it - "
                 f"e.g. [i]/sdcard/Download/report.pdf[/i]",
                 role="assistant",
             )
@@ -776,7 +771,7 @@ class ChatScreen(Screen):
         except Exception as e:
             import traceback; traceback.print_exc()
             self._add_msg(
-                f"[color=ff5555]\u274c  Could not open file:[/color]\n{e}",
+                f"[color=ff5555]Could not open file:[/color]\n{e}",
                 role="assistant",
             )
 
@@ -827,7 +822,7 @@ class ChatScreen(Screen):
             self._rag_doc_name = fname
             safe_name = escape_markup(fname)
             self._add_msg(
-                f"📄  [b]RAG mode active[/b] — {safe_name}\n"
+                f"[b]RAG mode active[/b] - {safe_name}\n"
                 "I'll answer all your questions using this document.\n"
                 "[color=888888][size=12sp]"
                 "Type [b]quit rag[/b] to return to normal chat."
@@ -836,7 +831,7 @@ class ChatScreen(Screen):
             )
         else:
             self._add_msg(
-                f"[color=ff5555]❌  Could not load document:[/color]\n{msg}",
+                f"[color=ff5555]Could not load document:[/color]\n{msg}",
                 role="assistant",
             )
         self._scroll_down()
@@ -876,7 +871,7 @@ class ChatScreen(Screen):
             )
             return
 
-        # "quit rag" command — exit RAG mode and reset docs
+        # "quit rag" command - exit RAG mode and reset docs
         if q.lower() in ("quit rag", "exit rag", "/quit rag", "/exit rag"):
             self._input.text = ""
             self._add_msg(escape_markup(q), role="user")
@@ -887,13 +882,13 @@ class ChatScreen(Screen):
                 doc = escape_markup(self._rag_doc_name)
                 self._rag_doc_name = ""
                 self._add_msg(
-                    f"💬  [b]RAG mode off[/b] — {doc} removed.\n"
+                    f"[b]RAG mode off[/b] - {doc} removed.\n"
                     "Back to normal chat. Your conversation history is preserved.",
                     role="assistant",
                 )
             else:
                 self._add_msg(
-                    "ℹ️  Not in RAG mode. Upload a PDF or TXT to activate it.",
+                    "Not in RAG mode. Upload a PDF or TXT to activate it.",
                     role="assistant",
                 )
             return
@@ -901,7 +896,7 @@ class ChatScreen(Screen):
         # Block sends until the LLM is ready
         if not self._model_ready:
             self._add_msg(
-                "⚡  [b]AI engine is still starting up...[/b]\n"
+                "[b]AI engine is still starting up...[/b]\n"
                 "[color=888888][size=12sp]"
                 "You can watch the progress in the welcome panel above. "
                 "Please send your message once it's ready."
@@ -918,7 +913,7 @@ class ChatScreen(Screen):
             fname = os.path.basename(path)
             self._remove_attachment()
             # Show a user bubble with the attachment + any typed text
-            bubble_text = f"📎  [b]{escape_markup(fname)}[/b]"
+            bubble_text = f"[b]{escape_markup(fname)}[/b]"
             if q:
                 bubble_text += f"\n{escape_markup(q)}"
             self._add_msg(bubble_text, role="user")
@@ -955,7 +950,7 @@ class ChatScreen(Screen):
     def _on_token(self, token: str):
         """Called from background thread for every streamed token.
         Buffers tokens and flushes to UI every 80 ms to reduce
-        mainthread event overhead (~200 tokens → ~10 flushes).
+        mainthread event overhead (~200 tokens -> ~10 flushes).
         """
         self._token_buf.append(token)
         if self._token_flush_ev is None:
@@ -999,7 +994,7 @@ class ChatScreen(Screen):
                                  self._current_row._lbl.text).strip()
                 self._history.append((self._pending_q, raw_ans))
                 # Keep last 3 turns verbatim; compress older ones into a
-                # one-line summary (no LLM call — just first sentence of reply).
+                # one-line summary (no LLM call - just first sentence of reply).
                 if len(self._history) > 6:
                     old = self._history[:-3]          # turns to compress
                     keep = self._history[-3:]         # most recent 3 verbatim
