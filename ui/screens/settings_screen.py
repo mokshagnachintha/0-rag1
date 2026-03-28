@@ -152,6 +152,7 @@ class ModelRow(BoxLayout):
                 repo_id     = self.meta["repo_id"],
                 filename    = self.meta["filename"],
                 min_bytes   = int(self.meta.get("min_bytes", 1)),
+                expected_size_mb = int(self.meta.get("size_mb", 0)),
                 on_progress = self._on_progress,
                 on_done     = self._on_download_done,
             )

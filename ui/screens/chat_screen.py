@@ -371,6 +371,7 @@ class ChatScreen(Screen):
         self._attach_card:    AttachmentPreviewCard | None = None
         self._scroll_pending: bool                   = False
         self._streaming_active: bool                 = False
+        self._service_started: bool                  = False
         self._model_ready:    bool                   = False   # True once LLM is loaded
         self._send_btn:       Button | None          = None    # ref for dimming
         self._build_ui()
@@ -559,6 +560,7 @@ class ChatScreen(Screen):
                 "• Tap [b]＋[/b] to attach a [b]PDF[/b] or [b]TXT[/b] — "
                 "I'll answer questions about its content."
             )
+            self._start_android_service_once()
             self._request_storage_permissions()
         else:
             self._model_ready = False
@@ -598,6 +600,20 @@ class ChatScreen(Screen):
                 ])
         except Exception as e:
             print(f"[permissions] Could not request: {e}")
+
+    def _start_android_service_once(self):
+        """Start Android foreground service only after models are ready."""
+        if self._service_started:
+            return
+        try:
+            from android import AndroidService  # type: ignore
+            svc = AndroidService("O-RAG AI Engine", "AI engine running in background")
+            svc.start("start")
+            self._service_started = True
+            print("[chat] Android foreground service started.")
+        except Exception as e:
+            # Desktop or unavailable android APIs.
+            print(f"[chat] Service start skipped: {e}")
 
     # ---------------------------------------------------------------- #
     #  Attach document via file picker                                  #

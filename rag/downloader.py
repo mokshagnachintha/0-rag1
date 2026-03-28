@@ -57,6 +57,11 @@ def _models_dir() -> str:
     return dest
 
 
+def _env_truthy(name: str) -> bool:
+    val = os.environ.get(name, "")
+    return str(val).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def model_dest_path(filename: str) -> str:
     return os.path.join(_models_dir(), filename)
 
@@ -158,22 +163,12 @@ def _get_hf_hub():
         )
 
 
-def _expected_bytes(repo_id: str, filename: str, revision: str = "main") -> int:
-    try:
-        from huggingface_hub import get_hf_file_metadata, hf_hub_url
-
-        url = hf_hub_url(repo_id=repo_id, filename=filename, revision=revision)
-        meta = get_hf_file_metadata(url)
-        return meta.size or 0
-    except Exception:
-        return 0
-
-
 def download_model(
     repo_id: str,
     filename: str,
     revision: str = "main",
     min_bytes: int = 1,
+    expected_size_mb: int = 0,
     force_download: bool = False,
     on_progress: Optional[Callable[[float, str], None]] = None,
     on_done: Optional[Callable[[bool, str], None]] = None,
@@ -197,12 +192,19 @@ def download_model(
                 on_done(True, dest)
             return
 
-        hf_hub_download = _get_hf_hub()
+        try:
+            hf_hub_download = _get_hf_hub()
+        except Exception as exc:
+            if on_done:
+                on_done(False, f"Downloader unavailable: {exc}")
+            return
 
         if on_progress:
-            on_progress(0.0, "Connecting to Hugging Face...")
+            on_progress(0.02, "Connecting to Hugging Face...")
 
-        total_bytes = _expected_bytes(repo_id, filename, revision=revision)
+        # Use local manifest size for progress tracking; avoids extra metadata
+        # calls that can stall/fail on some Android networks.
+        total_bytes = int(expected_size_mb * 1_048_576) if expected_size_mb > 0 else 0
         stop_poll = threading.Event()
 
         def _poller():
@@ -210,6 +212,7 @@ def download_model(
                 dest + ".incomplete",
                 dest + ".part",
             ]
+            pulse = 0.02
             while not stop_poll.wait(0.5):
                 check = dest
                 for candidate in incomplete_candidates:
@@ -228,6 +231,9 @@ def download_model(
                     elif on_progress:
                         mb_done = done / 1_048_576
                         on_progress(0.0, f"{mb_done:.0f} MB downloaded...")
+                elif on_progress:
+                    pulse = min(pulse + 0.005, 0.08)
+                    on_progress(pulse, "Preparing download...")
 
         poll_thread = threading.Thread(target=_poller, daemon=True)
         poll_thread.start()
@@ -244,8 +250,11 @@ def download_model(
                 import inspect
                 from huggingface_hub import hf_hub_download as _hfd
 
-                if "local_dir_use_symlinks" in inspect.signature(_hfd).parameters:
+                sig = inspect.signature(_hfd).parameters
+                if "local_dir_use_symlinks" in sig:
                     kwargs["local_dir_use_symlinks"] = False
+                if force_download and "force_download" in sig:
+                    kwargs["force_download"] = True
             except Exception:
                 pass
 
@@ -298,7 +307,10 @@ def auto_download_default(
         overall = (index + frac) / total
         on_progress(overall, text)
 
-    if _is_bootstrap_complete():
+    force_every_run = _env_truthy("ORAG_FORCE_BOOTSTRAP_DOWNLOAD")
+    force_network = _env_truthy("ORAG_FORCE_NETWORK_MODEL_DOWNLOAD")
+
+    if _is_bootstrap_complete() and not force_every_run:
         if on_progress:
             on_progress(1.0, "Offline ready. Using cached AI models.")
         if on_done:
@@ -326,12 +338,23 @@ def auto_download_default(
         meta = MOBILE_MODELS[index]
         label = meta["label"].split("(")[0].strip()
 
-        if _is_model_file_ready(meta) and not manifest_changed:
+        if _is_model_file_ready(meta) and not manifest_changed and not force_every_run:
             _emit(index, 1.0, f"{label} already cached.")
             _ensure_model(index + 1)
             return
 
-        _emit(index, 0.0, f"Downloading {label} (first launch only)...")
+        if force_every_run:
+            try:
+                stale = model_dest_path(meta["filename"])
+                if os.path.isfile(stale):
+                    os.remove(stale)
+            except Exception:
+                pass
+
+        if force_every_run:
+            _emit(index, 0.0, f"Downloading {label} (dev force mode)...")
+        else:
+            _emit(index, 0.0, f"Downloading {label} (first launch only)...")
 
         def _on_progress(frac: float, text: str) -> None:
             _emit(index, frac, f"{label}: {text}")
@@ -354,7 +377,8 @@ def auto_download_default(
             filename=meta["filename"],
             revision=meta.get("revision", "main"),
             min_bytes=int(meta.get("min_bytes", 1)),
-            force_download=manifest_changed,
+            expected_size_mb=int(meta.get("size_mb", 0)),
+            force_download=(manifest_changed or force_every_run or force_network),
             on_progress=_on_progress,
             on_done=_on_done,
         )

@@ -10,6 +10,11 @@ Single-screen design: one chat interface.
 # ── Kivy config BEFORE any other kivy import ──────────────────────── #
 import os
 os.environ.setdefault("KIVY_LOG_LEVEL", "warning")
+# Desktop development helper:
+# force model bootstrap download flow on every local run.
+# (Android builds are unaffected.)
+if not os.environ.get("ANDROID_PRIVATE"):
+    os.environ.setdefault("ORAG_FORCE_BOOTSTRAP_DOWNLOAD", "1")
 
 from kivy.config import Config
 Config.set("kivy", "window_icon", "assets/icon.png")
@@ -88,9 +93,6 @@ class RAGApp(App):
         sm = ScreenManager(transition=FadeTransition(duration=0.12))
         sm.add_widget(ChatScreen(name="chat"))
         root.add_widget(sm)
-
-        # Start foreground service after first frame so UI is visible immediately.
-        Clock.schedule_once(lambda *_: _start_android_service(), 0.0)
 
         # Init DB + retriever + model bootstrap in background thread.
         # Delay by 0.3 s so the ChatScreen's pipeline callbacks are registered
