@@ -170,8 +170,8 @@ def _launch(
 
 QWEN_PORT = 8082
 NOMIC_PORT = 8083
-QWEN_FILE = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
-NOMIC_FILE = "nomic-embed-text-v1.5.Q4_K_M.gguf"
+QWEN_FILE = "qwen2.5-1.5b-instruct-compressed.gguf"
+NOMIC_FILE = "nomic-embed-text-v1.5-compressed.gguf"
 MIN_QWEN_BYTES = 100 * 1024 * 1024
 MIN_NOMIC_BYTES = 10 * 1024 * 1024
 
