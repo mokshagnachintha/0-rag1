@@ -6,11 +6,21 @@ on:
   push:
     branches: [ main, master,model_host ]
   workflow_dispatch:
+    inputs:
+      clean_build:
+        description: "Force a clean p4a/buildozer rebuild (slower)"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   build-apk:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
+    env:
+      # Use cached outputs by default; set clean_build=true in manual runs to force clean.
+      CLEAN_BUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.clean_build || 'false' }}
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
     steps:
       - name: Checkout repository
@@ -37,10 +47,18 @@ jobs:
             libtinfo5 cmake libffi-dev libssl-dev \
             wget lld clang
 
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('.github/workflows/build_apk.yml','requirements.txt','buildozer.spec') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
       - name: Install Buildozer
         run: |
           pip install --upgrade pip setuptools wheel cython
-          pip install buildozer python-for-android
+          pip install buildozer python-for-android "cython==0.29.37"
 
       - name: Cache Buildozer global dir
         uses: actions/cache@v4
@@ -69,17 +87,37 @@ jobs:
         env:
           GRADLE_OPTS: "-Xmx4g -XX:MaxMetaspaceSize=512m"
         run: |
+          set -e
           java -version
           unset PYTHONHOME PYTHONPATH
-          rm -rf .buildozer/android/platform/build-arm64-v8a/build/other_builds/hostpython3 2>/dev/null || true
-          rm -rf ~/.buildozer/android/platform/build-arm64-v8a/build/other_builds/hostpython3 2>/dev/null || true
-          rm -rf .buildozer/android/platform/build-arm64-v8a/dists/
-          rm -rf ~/.buildozer/android/platform/build-arm64-v8a/dists/ 2>/dev/null || true
-          rm -rf .buildozer/android/app 2>/dev/null || true
-          pip install "cython==0.29.37" --quiet
           mkdir -p ~/.android && touch ~/.android/repositories.cfg
-          yes 2>/dev/null | buildozer android debug 2>&1 | tee build.log
-          exit ${PIPESTATUS[1]}
+
+          clean_p4a() {
+            echo "Cleaning p4a/buildozer outputs..."
+            rm -rf .buildozer/android/platform/build-arm64-v8a/build/other_builds/hostpython3 2>/dev/null || true
+            rm -rf ~/.buildozer/android/platform/build-arm64-v8a/build/other_builds/hostpython3 2>/dev/null || true
+            rm -rf .buildozer/android/platform/build-arm64-v8a/dists/ 2>/dev/null || true
+            rm -rf ~/.buildozer/android/platform/build-arm64-v8a/dists/ 2>/dev/null || true
+            rm -rf .buildozer/android/app 2>/dev/null || true
+          }
+
+          run_build() {
+            yes 2>/dev/null | buildozer android debug 2>&1 | tee -a build.log
+            return ${PIPESTATUS[1]}
+          }
+
+          : > build.log
+          if [ "${CLEAN_BUILD}" = "true" ]; then
+            echo "Manual clean build requested."
+            clean_p4a
+          fi
+
+          echo "Attempting cached build (fast path)..."
+          if ! run_build; then
+            echo "First build failed; retrying once with clean outputs..."
+            clean_p4a
+            run_build
+          fi
 
       - name: Bundle server binary into APK (no models)
         run: |
@@ -224,4 +262,3 @@ jobs:
           name: build-log
           path: build.log
           retention-days: 7
-
