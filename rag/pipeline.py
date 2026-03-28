@@ -3,8 +3,6 @@ pipeline.py - Orchestrates document ingest, retrieval and generation.
 """
 from __future__ import annotations
 
-import copy
-import os
 import threading
 import time
 from pathlib import Path
@@ -33,30 +31,6 @@ retriever = HybridRetriever(alpha=0.5)
 
 _auto_dl_progress_cb: Optional[Callable[[float, str], None]] = None
 _auto_dl_done_cb: Optional[Callable[[bool, str], None]] = None
-_auto_dl_state_cb: Optional[Callable[[dict], None]] = None
-_latest_bootstrap_state: dict = {
-    "overall_status": "preparing",
-    "overall_text": "Preparing AI models...",
-    "overall_fraction": 0.0,
-    "models": {
-        "qwen": {
-            "id": "qwen",
-            "label": "Qwen model",
-            "filename": QWEN_MODEL["filename"],
-            "fraction": 0.0,
-            "status": "Pending",
-        },
-        "nomic": {
-            "id": "nomic",
-            "label": "Nomic embeddings",
-            "filename": NOMIC_MODEL["filename"],
-            "fraction": 0.0,
-            "status": "Pending",
-        },
-    },
-}
-_service_probe_lock = threading.Lock()
-_service_probe_active = False
 
 
 def _service_qwen_ready(wait_seconds: float = 0.0, per_try_timeout: float = 0.35) -> bool:
@@ -81,19 +55,14 @@ def _service_qwen_ready(wait_seconds: float = 0.0, per_try_timeout: float = 0.35
 def register_auto_download_callbacks(
     on_progress: Optional[Callable[[float, str], None]],
     on_done: Optional[Callable[[bool, str], None]],
-    on_state: Optional[Callable[[dict], None]] = None,
 ) -> None:
     """
     Register UI callbacks for model bootstrap progress.
     If the model is already ready, on_done fires immediately.
     """
-    global _auto_dl_progress_cb, _auto_dl_done_cb, _auto_dl_state_cb
+    global _auto_dl_progress_cb, _auto_dl_done_cb
     _auto_dl_progress_cb = on_progress
     _auto_dl_done_cb = on_done
-    _auto_dl_state_cb = on_state
-
-    if on_state:
-        on_state(copy.deepcopy(_latest_bootstrap_state))
 
     if on_done and llm.is_loaded():
         on_done(True, "Models ready: Qwen + Nomic")
@@ -104,130 +73,10 @@ def register_auto_download_callbacks(
         if _service_qwen_ready(wait_seconds=0.0):
             llm._backend = "llama_server"
             llm._model_path = model_dest_path(QWEN_MODEL["filename"])
-            _set_bootstrap_state(
-                overall_status="ready",
-                overall_text="Offline ready. AI engine connected.",
-                overall_fraction=1.0,
-                qwen_frac=1.0,
-                qwen_status="Ready (service)",
-            )
             if on_done:
                 on_done(True, "Models ready: Qwen + Nomic (service)")
 
     threading.Thread(target=_service_probe, daemon=True).start()
-
-
-def _set_bootstrap_state(
-    *,
-    overall_status: Optional[str] = None,
-    overall_text: Optional[str] = None,
-    overall_fraction: Optional[float] = None,
-    qwen_frac: Optional[float] = None,
-    qwen_status: Optional[str] = None,
-    nomic_frac: Optional[float] = None,
-    nomic_status: Optional[str] = None,
-) -> None:
-    if overall_status is not None:
-        _latest_bootstrap_state["overall_status"] = overall_status
-    if overall_text is not None:
-        _latest_bootstrap_state["overall_text"] = overall_text
-    if overall_fraction is not None:
-        _latest_bootstrap_state["overall_fraction"] = max(0.0, min(1.0, overall_fraction))
-    if qwen_frac is not None:
-        _latest_bootstrap_state["models"]["qwen"]["fraction"] = max(0.0, min(1.0, qwen_frac))
-    if qwen_status is not None:
-        _latest_bootstrap_state["models"]["qwen"]["status"] = qwen_status
-    if nomic_frac is not None:
-        _latest_bootstrap_state["models"]["nomic"]["fraction"] = max(0.0, min(1.0, nomic_frac))
-    if nomic_status is not None:
-        _latest_bootstrap_state["models"]["nomic"]["status"] = nomic_status
-    if _auto_dl_state_cb:
-        _auto_dl_state_cb(copy.deepcopy(_latest_bootstrap_state))
-
-
-def _emit_progress(frac: float, text: str) -> None:
-    if _auto_dl_progress_cb:
-        _auto_dl_progress_cb(frac, text)
-
-
-def _wait_for_service_backend(
-    qwen_path: str,
-    timeout_seconds: float = 240.0,
-    fail_message: str = (
-        "AI engine unavailable. Tap Retry to restart engine probe "
-        "(network is only required for first-time downloads)."
-    ),
-) -> None:
-    global _service_probe_active
-    with _service_probe_lock:
-        if _service_probe_active:
-            return
-        _service_probe_active = True
-
-    def _run():
-        global _service_probe_active
-        try:
-            start = time.time()
-            delay = 1.0
-            attempt = 0
-            _set_bootstrap_state(
-                overall_status="starting_engine",
-                overall_text="Starting AI engine...",
-                qwen_status="Waiting for service...",
-            )
-            _emit_progress(0.98, "Starting AI engine...")
-
-            while (time.time() - start) < timeout_seconds:
-                if _service_qwen_ready(wait_seconds=2.0, per_try_timeout=0.5):
-                    llm._backend = "llama_server"
-                    llm._model_path = qwen_path
-                    _set_bootstrap_state(
-                        overall_status="ready",
-                        overall_text="Offline ready. AI engine connected.",
-                        overall_fraction=1.0,
-                        qwen_frac=1.0,
-                        qwen_status="Ready (service)",
-                        nomic_frac=1.0,
-                        nomic_status="Ready",
-                    )
-                    _emit_progress(1.0, "Offline ready. AI engine connected.")
-                    if _auto_dl_done_cb:
-                        _auto_dl_done_cb(True, "Models ready: Qwen + Nomic")
-                    return
-
-                attempt += 1
-                msg = f"Starting AI engine... retry {attempt}"
-                _set_bootstrap_state(
-                    overall_status="starting_engine",
-                    overall_text=msg,
-                    qwen_status=msg,
-                )
-                _emit_progress(0.98, msg)
-                time.sleep(delay)
-                delay = min(delay * 1.5, 10.0)
-
-            _set_bootstrap_state(
-                overall_status="error",
-                overall_text=fail_message,
-                qwen_status="Service not reachable.",
-            )
-            if _auto_dl_done_cb:
-                _auto_dl_done_cb(False, fail_message)
-        finally:
-            with _service_probe_lock:
-                _service_probe_active = False
-
-    threading.Thread(target=_run, daemon=True).start()
-
-
-def retry_engine_probe() -> None:
-    """Retry Android service probe after a bootstrap-engine failure."""
-    qwen_path = model_dest_path(QWEN_MODEL["filename"])
-    if not os.path.isfile(qwen_path):
-        if _auto_dl_done_cb:
-            _auto_dl_done_cb(False, "Qwen model file missing. Re-run first-launch download.")
-        return
-    _wait_for_service_backend(qwen_path)
 
 
 def init() -> None:
@@ -241,12 +90,8 @@ def _start_auto_download() -> None:
     """Ensure Qwen + Nomic are on disk, then load/connect Qwen."""
 
     def _progress(frac: float, text: str):
-        _emit_progress(frac, text)
-
-    def _state(state: dict):
-        _latest_bootstrap_state.update(copy.deepcopy(state))
-        if _auto_dl_state_cb:
-            _auto_dl_state_cb(copy.deepcopy(_latest_bootstrap_state))
+        if _auto_dl_progress_cb:
+            _auto_dl_progress_cb(frac, text)
 
     def _done(success: bool, message: str):
         qwen_path = model_dest_path(QWEN_MODEL["filename"])
@@ -257,31 +102,14 @@ def _start_auto_download() -> None:
             return
 
         if llm.is_loaded():
-            _set_bootstrap_state(
-                overall_status="ready",
-                overall_text="Offline ready. AI engine loaded.",
-                overall_fraction=1.0,
-            )
             if _auto_dl_done_cb:
                 _auto_dl_done_cb(True, "Models ready: Qwen + Nomic")
-            return
-
-        # Android policy: service-first only. Do not fallback to in-app load.
-        if os.environ.get("ANDROID_PRIVATE"):
-            _wait_for_service_backend(qwen_path)
             return
 
         # Prefer the service-owned Qwen server if it is up.
         if _service_qwen_ready(wait_seconds=12.0):
             llm._backend = "llama_server"
             llm._model_path = qwen_path
-            _set_bootstrap_state(
-                overall_status="ready",
-                overall_text="Offline ready. AI engine connected.",
-                overall_fraction=1.0,
-                qwen_frac=1.0,
-                qwen_status="Ready (service)",
-            )
             if _auto_dl_done_cb:
                 _auto_dl_done_cb(True, "Models ready: Qwen + Nomic")
             return
@@ -293,7 +121,7 @@ def _start_auto_download() -> None:
             on_done=lambda ok, msg: (_auto_dl_done_cb(ok, msg) if _auto_dl_done_cb else None),
         )
 
-    auto_download_default(on_progress=_progress, on_done=_done, on_state=_state)
+    auto_download_default(on_progress=_progress, on_done=_done)
 
 
 # ------------------------------------------------------------------ #
