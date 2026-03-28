@@ -312,6 +312,149 @@ class DocStatusCard(BoxLayout):
         self._status.markup = True
 
 
+class _ModelProgressRow(BoxLayout):
+    def __init__(self, title: str, **kw):
+        super().__init__(
+            orientation="vertical",
+            size_hint=(1, None),
+            height=dp(62),
+            spacing=dp(4),
+            **kw,
+        )
+        top = BoxLayout(size_hint=(1, None), height=dp(18))
+        self._title = Label(
+            text=title,
+            size_hint=(1, 1),
+            color=(0.9, 0.9, 0.9, 1),
+            font_size=sp(12),
+            halign="left",
+            valign="middle",
+        )
+        self._title.bind(size=lambda w, _: setattr(w, "text_size", (w.width, w.height)))
+        self._pct = Label(
+            text="0%",
+            size_hint=(None, 1),
+            width=dp(44),
+            color=(0.7, 0.7, 0.72, 1),
+            font_size=sp(11),
+            halign="right",
+            valign="middle",
+        )
+        self._pct.bind(size=lambda w, _: setattr(w, "text_size", (w.width, w.height)))
+        top.add_widget(self._title)
+        top.add_widget(self._pct)
+        self.add_widget(top)
+
+        self._bar = ProgressBar(max=100, value=0, size_hint=(1, None), height=dp(8))
+        self.add_widget(self._bar)
+
+        self._detail = Label(
+            text="Pending",
+            size_hint=(1, None),
+            height=dp(18),
+            color=(0.65, 0.65, 0.68, 1),
+            font_size=sp(10.5),
+            halign="left",
+            valign="middle",
+        )
+        self._detail.bind(size=lambda w, _: setattr(w, "text_size", (w.width, w.height)))
+        self.add_widget(self._detail)
+
+    def set_progress(self, fraction: float, status: str):
+        f = max(0.0, min(1.0, float(fraction)))
+        self._bar.value = int(f * 100)
+        self._pct.text = f"{int(f * 100)}%"
+        self._detail.text = status or "Pending"
+
+
+class BootstrapStatusCard(BoxLayout):
+    def __init__(self, on_retry, **kw):
+        super().__init__(
+            orientation="vertical",
+            size_hint=(1, None),
+            height=dp(182),
+            padding=[dp(12), dp(10), dp(12), dp(10)],
+            spacing=dp(8),
+            **kw,
+        )
+        _paint(self, (0.12, 0.13, 0.15, 1), radius=14)
+
+        self._title = Label(
+            text="[b]Model setup in progress[/b]",
+            markup=True,
+            size_hint=(1, None),
+            height=dp(22),
+            color=_WHITE,
+            font_size=sp(13),
+            halign="left",
+            valign="middle",
+        )
+        self._title.bind(size=lambda w, _: setattr(w, "text_size", (w.width, w.height)))
+        self.add_widget(self._title)
+
+        self._overall = Label(
+            text="Preparing AI models...",
+            size_hint=(1, None),
+            height=dp(20),
+            color=(0.73, 0.77, 0.82, 1),
+            font_size=sp(11.5),
+            halign="left",
+            valign="middle",
+        )
+        self._overall.bind(size=lambda w, _: setattr(w, "text_size", (w.width, w.height)))
+        self.add_widget(self._overall)
+
+        self._qwen = _ModelProgressRow("Qwen model")
+        self._nomic = _ModelProgressRow("Nomic embeddings")
+        self.add_widget(self._qwen)
+        self.add_widget(self._nomic)
+
+        self._retry_btn = Button(
+            text="Retry engine startup",
+            size_hint=(None, None),
+            size=(dp(176), dp(34)),
+            background_normal="",
+            background_color=(0.24, 0.47, 0.72, 1),
+            color=_WHITE,
+            font_size=sp(11.5),
+            opacity=0.0,
+            disabled=True,
+        )
+        self._retry_btn.bind(on_release=on_retry)
+        retry_row = BoxLayout(size_hint=(1, None), height=dp(36))
+        retry_row.add_widget(Widget())
+        retry_row.add_widget(self._retry_btn)
+        self.add_widget(retry_row)
+
+    def update_state(self, state: dict):
+        self._overall.text = state.get("overall_text", "Preparing AI models...")
+        models = state.get("models", {})
+        qwen = models.get("qwen", {})
+        nomic = models.get("nomic", {})
+        self._qwen.set_progress(qwen.get("fraction", 0.0), qwen.get("status", "Pending"))
+        self._nomic.set_progress(nomic.get("fraction", 0.0), nomic.get("status", "Pending"))
+
+    def set_ready(self):
+        self._overall.text = "Offline ready."
+        self._qwen.set_progress(1.0, "Ready")
+        self._nomic.set_progress(1.0, "Ready")
+        self._retry_btn.opacity = 0.0
+        self._retry_btn.disabled = True
+
+    def set_overall_text(self, text: str):
+        self._overall.text = text
+
+    def set_error(self, message: str):
+        self._overall.text = message
+        self._retry_btn.opacity = 1.0
+        self._retry_btn.disabled = False
+
+    def set_retrying(self):
+        self._overall.text = "Retrying AI engine startup..."
+        self._retry_btn.opacity = 0.0
+        self._retry_btn.disabled = True
+
+
 # ------------------------------------------------------------------ #
 #  Typing indicator  . . .                                            #
 # ------------------------------------------------------------------ #
@@ -374,9 +517,11 @@ class ChatScreen(Screen):
         self._service_started: bool                  = False
         self._model_ready:    bool                   = False   # True once LLM is loaded
         self._send_btn:       Button | None          = None    # ref for dimming
+        self._composer:       BoxLayout | None       = None
+        self._bootstrap_wrap: BoxLayout | None       = None
+        self._bootstrap_card: BootstrapStatusCard | None = None
+        self._welcome_sent:   bool                   = False
         self._perm_requested: bool                   = False
-        self._last_model_stage: str                  = ""
-        self._last_model_pct: int                    = -1
         self._last_model_update_at: float            = 0.0
         self._build_ui()
 
@@ -407,105 +552,112 @@ class ChatScreen(Screen):
         _paint(sep, _DIVIDER)
         root.add_widget(sep)
 
+        self._bootstrap_wrap = BoxLayout(
+            size_hint=(1, None),
+            height=dp(198),
+            padding=[dp(12), dp(8), dp(12), dp(8)],
+        )
+        _paint(self._bootstrap_wrap, _BG)
+        self._bootstrap_card = BootstrapStatusCard(on_retry=self._on_retry_engine_start)
+        self._bootstrap_wrap.add_widget(self._bootstrap_card)
+        root.add_widget(self._bootstrap_wrap)
+
         # Message list
         self._scroll = ScrollView(
             size_hint=(1, 1), do_scroll_x=False, bar_width=dp(3),
             effect_cls=ScrollEffect,
         )
         _paint(self._scroll, _BG)
-
-        self._msgs = BoxLayout(
-            orientation="vertical",
-            size_hint=(1, None), spacing=0,
-        )
+        self._msgs = BoxLayout(orientation="vertical", size_hint=(1, None), spacing=0)
         self._msgs.bind(minimum_height=self._msgs.setter("height"))
-        # While streaming, keep the view pinned to the latest token without animations.
         self._msgs.bind(height=lambda *_: self._on_msgs_height_changed())
         self._scroll.add_widget(self._msgs)
         root.add_widget(self._scroll)
 
-        # Welcome message - text updated when model is ready
-        self._welcome = self._add_msg(
-            "Hello! I'm your offline AI assistant.\n\n"
-            "[b]Downloading AI models (first launch only)...[/b]",
-            role="assistant",
-        )
-
-        # Input area (attachment strip + bar)
-        input_area = BoxLayout(
+        # Composer area
+        composer = BoxLayout(
             orientation="vertical",
-            size_hint=(1, None), height=dp(74),
+            size_hint=(1, None),
+            height=dp(88),
+            padding=[dp(0), dp(0), dp(0), dp(0)],
         )
-        _paint(input_area, _HDR_BG)
+        self._composer = composer
+        _paint(composer, _HDR_BG)
 
         # Attachment preview strip - hidden until a file is picked
         self._attach_strip = BoxLayout(
             orientation="horizontal",
-            size_hint=(1, None), height=0,
-            padding=[dp(10), dp(6), dp(10), dp(0)],
+            size_hint=(1, None),
+            height=0,
+            padding=[dp(12), dp(6), dp(12), dp(0)],
         )
         _paint(self._attach_strip, _HDR_BG)
-        input_area.add_widget(self._attach_strip)
+        composer.add_widget(self._attach_strip)
 
-        bar = BoxLayout(
-            size_hint=(1, None), height=dp(74),
-            padding=[dp(10), dp(8), dp(10), dp(8)],
-            spacing=dp(8),
+        rail = BoxLayout(
+            size_hint=(1, None),
+            height=dp(88),
+            padding=[dp(12), dp(12), dp(12), dp(12)],
         )
+        rail_row = BoxLayout(size_hint=(1, None), height=dp(50), spacing=dp(10))
 
-        # [+] attach button
         add_btn = Button(
             text="+",
-            font_size=sp(26), bold=True,
-            size_hint=(None, None), size=(dp(48), dp(48)),
-            background_normal="", background_color=(0, 0, 0, 0),
+            size_hint=(None, None),
+            size=(dp(44), dp(44)),
+            font_size=sp(24),
+            background_normal="",
+            background_color=(0, 0, 0, 0),
             color=_WHITE,
+            bold=True,
         )
-        _paint(add_btn, _ADD_BG, radius=24)
+        _paint(add_btn, _ADD_BG, radius=22)
         add_btn.bind(on_release=self._on_attach)
-        bar.add_widget(add_btn)
+        rail_row.add_widget(add_btn)
 
-        # Text input pill
         pill = BoxLayout(
-            size_hint=(1, 1),
-            padding=[dp(14), dp(8), dp(52), dp(8)],
+            orientation="horizontal",
+            size_hint=(1, None),
+            height=dp(44),
+            padding=[dp(14), dp(6), dp(14), dp(6)],
         )
         _paint(pill, _INPUT_BG, radius=22)
 
         self._input = TextInput(
             hint_text="Message...",
-            multiline=False, size_hint=(1, 1),
-            font_size=sp(14.5),
+            multiline=False,
+            size_hint=(1, 1),
+            font_size=sp(14),
             foreground_color=_WHITE,
             hint_text_color=_MUTED,
             background_color=(0, 0, 0, 0),
             cursor_color=_WHITE,
-            padding=[0, dp(4)],
+            padding=[0, dp(10)],
         )
         self._input.bind(on_text_validate=self._on_send)
         pill.add_widget(self._input)
+        rail_row.add_widget(pill)
 
-        # [>] send button overlaid on pill right
-        send_anc = AnchorLayout(
-            size_hint=(None, 1), width=dp(52),
-            anchor_x="center", anchor_y="center",
-        )
         send_btn = Button(
-            text=">", font_size=sp(20), bold=True,
-            size_hint=(None, None), size=(dp(40), dp(40)),
-            background_normal="", background_color=(0, 0, 0, 0),
+            text=">",
+            size_hint=(None, None),
+            size=(dp(44), dp(44)),
+            font_size=sp(20),
+            background_normal="",
+            background_color=(0, 0, 0, 0),
             color=_WHITE,
+            bold=True,
+            disabled=True,
+            opacity=0.45,
         )
-        _paint(send_btn, _GREEN, radius=20)
+        _paint(send_btn, _GREEN, radius=22)
         send_btn.bind(on_release=self._on_send)
-        send_anc.add_widget(send_btn)
-        self._send_btn = send_btn   # keep ref so we can dim it while loading
-        send_btn.opacity = 0.4       # dimmed until model is ready
+        self._send_btn = send_btn
+        rail_row.add_widget(send_btn)
 
-        bar.add_widget(pill)
-        bar.add_widget(send_anc)
-        input_area.add_widget(bar)
-        root.add_widget(input_area)
+        rail.add_widget(rail_row)
+        composer.add_widget(rail)
+        root.add_widget(composer)
 
         self.add_widget(root)
 
@@ -522,73 +674,66 @@ class ChatScreen(Screen):
         register_auto_download_callbacks(
             on_progress=self._on_model_progress,
             on_done    =self._on_model_ready,
+            on_state   =self._on_bootstrap_state,
         )
 
     @mainthread
     def _on_model_progress(self, frac: float, text: str):
-        # Determine which stage we are in based on the progress text
-        txt_lo = text.lower()
-        if "offline ready" in txt_lo or "cached" in txt_lo:
-            stage = "[b]Offline ready[/b]"
-        elif "start" in txt_lo or "engine" in txt_lo or "loading model" in txt_lo:
-            stage = "[b]Starting AI engine...[/b]"
-        elif "connect" in txt_lo or "hugging" in txt_lo or "download" in txt_lo or "/" in text:
-            stage = "[b]Downloading AI models (first launch only)...[/b]"
-        else:
-            stage = "[b]Preparing AI models...[/b]"
-
-        pct    = int(min(frac, 0.999) * 100)
-
-        # Throttle expensive label re-rendering to keep UI responsive
-        # during long downloads on slower Android devices.
         now = time.monotonic()
-        stage_changed = stage != self._last_model_stage
-        pct_changed = pct != self._last_model_pct
-        must_render = (
-            stage_changed
-            or pct_changed
-            or pct >= 99
-            or (now - self._last_model_update_at) >= 0.75
-        )
-        if not must_render:
+        if (now - self._last_model_update_at) < 0.4:
             return
-
-        self._last_model_stage = stage
-        self._last_model_pct = pct
         self._last_model_update_at = now
+        if self._bootstrap_card:
+            self._bootstrap_card.set_overall_text(text)
 
-        filled = "#" * (pct // 10)
-        empty  = "-" * (10 - pct // 10)
-        bar    = f"[color=19c37d]{filled}[/color][color=555555]{empty}[/color]"
+    @mainthread
+    def _on_bootstrap_state(self, state: dict):
+        now = time.monotonic()
+        if (now - self._last_model_update_at) < 0.15:
+            return
+        self._last_model_update_at = now
+        if self._bootstrap_card:
+            self._bootstrap_card.update_state(state)
 
-        self._welcome._lbl.text = (
-            f"{stage}\n\n"
-            f"[size=13sp]{bar}  {pct}%[/size]\n"
-            f"[size=12sp][color=aaaaaa]{text}[/color][/size]"
-        )
+    def _on_retry_engine_start(self, *_):
+        if self._bootstrap_card:
+            self._bootstrap_card.set_retrying()
+        self._start_android_service_once(force=True)
+        try:
+            from rag.pipeline import retry_engine_probe
+            retry_engine_probe()
+        except Exception as exc:
+            self._on_model_ready(False, f"Could not restart engine probe: {exc}")
 
     @mainthread
     def _on_model_ready(self, success: bool, message: str):
         if success:
             self._model_ready = True
-            # Restore send button to full opacity
             if self._send_btn:
                 self._send_btn.color = _WHITE
                 self._send_btn.opacity = 1.0
-            self._welcome._lbl.text = (
-                "[b]Offline ready. How can I assist you today?[/b]\n\n"
-                "- Just type a message to chat with me.\n"
-                "- Tap [b]+[/b] to attach a [b]PDF[/b] or [b]TXT[/b] - "
-                "I'll answer questions about its content."
-            )
-            # Keep the model-ready callback lightweight to reduce ANR risk.
-            Clock.schedule_once(lambda *_: self._start_android_service_once(), 0.05)
+                self._send_btn.disabled = False
+            if self._bootstrap_card:
+                self._bootstrap_card.set_ready()
+            if self._bootstrap_wrap:
+                Animation.stop_all(self._bootstrap_wrap, "height")
+                Animation(height=0, duration=0.2, t="out_quad").start(self._bootstrap_wrap)
+            if not self._welcome_sent:
+                self._welcome_sent = True
+                self._add_msg(
+                    "[b]Offline ready.[/b]\n"
+                    "Send a message to chat, or tap + to attach a PDF/TXT for RAG.",
+                    role="assistant",
+                )
         else:
             self._model_ready = False
-            self._welcome._lbl.text = (
-                f"[color=ff5555]Model failed to load:[/color]\n{message}\n\n"
-                "Network is required only for first-time setup. Check your connection and retry."
-            )
+            if self._send_btn:
+                self._send_btn.disabled = True
+                self._send_btn.opacity = 0.45
+            if self._bootstrap_wrap:
+                self._bootstrap_wrap.height = dp(198)
+            if self._bootstrap_card:
+                self._bootstrap_card.set_error(message)
 
     # ---------------------------------------------------------------- #
     #  Storage permission request                                       #
@@ -625,9 +770,9 @@ class ChatScreen(Screen):
         except Exception as e:
             print(f"[permissions] Could not request: {e}")
 
-    def _start_android_service_once(self):
-        """Start Android foreground service only after models are ready."""
-        if self._service_started:
+    def _start_android_service_once(self, force: bool = False):
+        """Start Android foreground service helper (no-op on desktop)."""
+        if self._service_started and not force:
             return
         try:
             from android import AndroidService  # type: ignore
@@ -793,9 +938,10 @@ class ChatScreen(Screen):
         self._attach_strip.add_widget(card)
 
         # Expand the strip to show the card
-        self._attach_strip.height = dp(80)
-        # Grow the whole input_area
-        self._attach_strip.parent.height = dp(154)
+        self._attach_strip.height = dp(76)
+        # Grow the whole composer area
+        if self._composer:
+            self._composer.height = dp(164)
 
     @mainthread
     def _remove_attachment(self):
@@ -804,7 +950,8 @@ class ChatScreen(Screen):
         self._attach_card    = None
         self._attach_strip.clear_widgets()
         self._attach_strip.height = 0
-        self._attach_strip.parent.height = dp(74)
+        if self._composer:
+            self._composer.height = dp(88)
 
     def _start_ingest(self, path: str, fname: str):
         card = DocStatusCard(fname)

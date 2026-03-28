@@ -39,6 +39,10 @@ from ui.screens.chat_screen import ChatScreen
 from rag.pipeline           import init
 
 
+_SERVICE_START_LOCK = threading.Lock()
+_SERVICE_STARTED = False
+
+
 def _global_exception_handler(exc_type, exc_value, exc_tb):
     """Log unhandled exceptions instead of silently crashing."""
     msg = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
@@ -59,10 +63,15 @@ def _start_android_service():
     """Start the foreground service that owns llama-server processes.
     No-op on desktop (ImportError is silently ignored).
     """
+    global _SERVICE_STARTED
+    with _SERVICE_START_LOCK:
+        if _SERVICE_STARTED:
+            return
     try:
         from android import AndroidService  # type: ignore
         svc = AndroidService("O-RAG AI Engine", "AI engine running in background")
         svc.start("start")
+        _SERVICE_STARTED = True
         print("[main] Android foreground service started.")
     except Exception as exc:
         print(f"[main] Service start skipped: {exc}")
@@ -93,6 +102,12 @@ class RAGApp(App):
         sm = ScreenManager(transition=FadeTransition(duration=0.12))
         sm.add_widget(ChatScreen(name="chat"))
         root.add_widget(sm)
+
+        # Start service early (Android only) so model bootstrap can connect to it.
+        Clock.schedule_once(
+            lambda *_: _start_android_service(),
+            0.05,
+        )
 
         # Init DB + retriever + model bootstrap in background thread.
         # Delay by 0.3 s so the ChatScreen's pipeline callbacks are registered

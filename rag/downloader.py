@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import ssl
+import copy
 import threading
 import time
 import urllib.error
@@ -25,6 +26,7 @@ from typing import Callable, Optional
 # ------------------------------------------------------------------ #
 
 QWEN_MODEL: dict = {
+    "id": "qwen",
     "label": "Qwen 2.5 1.5B Instruct Q4_K_M (~1.1 GB)",
     "repo_id": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
     "filename": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
@@ -34,6 +36,7 @@ QWEN_MODEL: dict = {
 }
 
 NOMIC_MODEL: dict = {
+    "id": "nomic",
     "label": "Nomic Embed Text v1.5 Q4_K_M (~80 MB)",
     "repo_id": "nomic-ai/nomic-embed-text-v1.5-GGUF",
     "filename": "nomic-embed-text-v1.5.Q4_K_M.gguf",
@@ -392,6 +395,7 @@ def download_model(
 def auto_download_default(
     on_progress: Optional[Callable[[float, str], None]] = None,
     on_done: Optional[Callable[[bool, str], None]] = None,
+    on_state: Optional[Callable[[dict], None]] = None,
 ) -> None:
     """
     Ensure both Qwen + Nomic are present for offline use.
@@ -404,18 +408,47 @@ def auto_download_default(
     """
 
     total = len(MOBILE_MODELS)
+    state = {
+        "overall_status": "preparing",
+        "overall_text": "Preparing AI models...",
+        "overall_fraction": 0.0,
+        "models": {
+            m.get("id", m["filename"]): {
+                "id": m.get("id", m["filename"]),
+                "label": m["label"].split("(")[0].strip(),
+                "filename": m["filename"],
+                "fraction": 0.0,
+                "status": "Pending",
+            }
+            for m in MOBILE_MODELS
+        },
+    }
+
+    def _emit_state() -> None:
+        if on_state:
+            on_state(copy.deepcopy(state))
 
     def _emit(index: int, frac: float, text: str) -> None:
-        if not on_progress:
-            return
         frac = max(0.0, min(1.0, frac))
         overall = (index + frac) / total
-        on_progress(overall, text)
+        state["overall_fraction"] = overall
+        state["overall_text"] = text
+        _emit_state()
+        if on_progress:
+            on_progress(overall, text)
 
     force_every_run = _env_truthy("ORAG_FORCE_BOOTSTRAP_DOWNLOAD")
     force_network = _env_truthy("ORAG_FORCE_NETWORK_MODEL_DOWNLOAD")
 
     if _is_bootstrap_complete() and not force_every_run:
+        state["overall_status"] = "ready"
+        state["overall_fraction"] = 1.0
+        state["overall_text"] = "Offline ready. Using cached AI models."
+        for m in MOBILE_MODELS:
+            mid = m.get("id", m["filename"])
+            state["models"][mid]["fraction"] = 1.0
+            state["models"][mid]["status"] = "Cached"
+        _emit_state()
         if on_progress:
             on_progress(1.0, "Offline ready. Using cached AI models.")
         if on_done:
@@ -430,10 +463,22 @@ def auto_download_default(
             try:
                 _save_bootstrap_state()
             except Exception as exc:
+                state["overall_status"] = "error"
+                state["overall_text"] = f"Failed to write bootstrap state: {exc}"
+                _emit_state()
                 if on_done:
                     on_done(False, f"Failed to write bootstrap state: {exc}")
                 return
 
+            state["overall_status"] = "ready"
+            state["overall_fraction"] = 1.0
+            state["overall_text"] = "Offline ready. AI models cached on device."
+            for m in MOBILE_MODELS:
+                mid = m.get("id", m["filename"])
+                state["models"][mid]["fraction"] = 1.0
+                if state["models"][mid]["status"] == "Pending":
+                    state["models"][mid]["status"] = "Ready"
+            _emit_state()
             if on_progress:
                 on_progress(1.0, "Offline ready. AI models cached on device.")
             if on_done:
@@ -441,9 +486,13 @@ def auto_download_default(
             return
 
         meta = MOBILE_MODELS[index]
+        mid = meta.get("id", meta["filename"])
         label = meta["label"].split("(")[0].strip()
 
         if _is_model_file_ready(meta) and not manifest_changed and not force_every_run:
+            state["models"][mid]["fraction"] = 1.0
+            state["models"][mid]["status"] = "Cached"
+            state["overall_status"] = "verifying"
             _emit(index, 1.0, f"{label} already cached.")
             _ensure_model(index + 1)
             return
@@ -457,24 +506,43 @@ def auto_download_default(
                 pass
 
         if force_every_run:
+            state["overall_status"] = "downloading"
+            state["models"][mid]["fraction"] = 0.0
+            state["models"][mid]["status"] = "Downloading (dev force mode)..."
             _emit(index, 0.0, f"Downloading {label} (dev force mode)...")
         else:
+            state["overall_status"] = "downloading"
+            state["models"][mid]["fraction"] = 0.0
+            state["models"][mid]["status"] = "Downloading (first launch only)..."
             _emit(index, 0.0, f"Downloading {label} (first launch only)...")
 
         def _on_progress(frac: float, text: str) -> None:
+            state["models"][mid]["fraction"] = max(0.0, min(1.0, frac))
+            state["models"][mid]["status"] = text
             _emit(index, frac, f"{label}: {text}")
 
         def _on_done(success: bool, message: str) -> None:
             if not success:
+                state["overall_status"] = "error"
+                state["overall_text"] = message
+                state["models"][mid]["status"] = message
+                _emit_state()
                 if on_done:
                     on_done(False, message)
                 return
 
             if not _is_model_file_ready(meta):
+                state["overall_status"] = "error"
+                state["overall_text"] = f"Download incomplete: {meta['filename']}"
+                state["models"][mid]["status"] = "Download incomplete."
+                _emit_state()
                 if on_done:
                     on_done(False, f"Download incomplete: {meta['filename']}")
                 return
 
+            state["models"][mid]["fraction"] = 1.0
+            state["models"][mid]["status"] = "Ready"
+            state["overall_status"] = "verifying"
             _ensure_model(index + 1)
 
         download_model(
@@ -488,5 +556,6 @@ def auto_download_default(
             on_done=_on_done,
         )
 
+    _emit_state()
     _ensure_model(0)
 
