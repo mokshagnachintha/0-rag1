@@ -26,6 +26,7 @@ from kivy.graphics import Color, Rectangle
 from kivy.clock import Clock
 
 import sys
+import threading
 import traceback
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -65,6 +66,15 @@ def _start_android_service():
 class RAGApp(App):
     title = "O-RAG"
 
+    def _start_pipeline_init_async(self, *_):
+        """Run heavy startup work off the UI thread to avoid ANR/freezes."""
+        def _run():
+            try:
+                init()
+            except Exception:
+                _global_exception_handler(*sys.exc_info())
+        threading.Thread(target=_run, daemon=True).start()
+
     def build(self):
         root = BoxLayout(orientation="vertical")
         with root.canvas.before:
@@ -79,14 +89,13 @@ class RAGApp(App):
         sm.add_widget(ChatScreen(name="chat"))
         root.add_widget(sm)
 
-        # Start foreground service first — it will launch llama-server so
-        # it stays alive even when the app is backgrounded.
-        _start_android_service()
+        # Start foreground service after first frame so UI is visible immediately.
+        Clock.schedule_once(lambda *_: _start_android_service(), 0.0)
 
-        # Init DB + retriever, then kick off model loading (bundled or download)
+        # Init DB + retriever + model bootstrap in background thread.
         # Delay by 0.3 s so the ChatScreen's pipeline callbacks are registered
         # first — prevents a race where models load before the UI can hear about it.
-        Clock.schedule_once(lambda *_: init(), 0.3)
+        Clock.schedule_once(self._start_pipeline_init_async, 0.3)
         return root
 
 

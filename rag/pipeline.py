@@ -33,13 +33,16 @@ _auto_dl_progress_cb: Optional[Callable[[float, str], None]] = None
 _auto_dl_done_cb: Optional[Callable[[bool, str], None]] = None
 
 
-def _service_qwen_ready(wait_seconds: float = 0.0) -> bool:
+def _service_qwen_ready(wait_seconds: float = 0.0, per_try_timeout: float = 0.35) -> bool:
     import urllib.request
 
     attempts = max(1, int(wait_seconds / 0.5))
     for i in range(attempts):
         try:
-            with urllib.request.urlopen("http://127.0.0.1:8082/health", timeout=1) as r:
+            with urllib.request.urlopen(
+                "http://127.0.0.1:8082/health",
+                timeout=per_try_timeout,
+            ) as r:
                 if r.status == 200:
                     return True
         except Exception:
@@ -65,11 +68,15 @@ def register_auto_download_callbacks(
         on_done(True, "Models ready: Qwen + Nomic")
         return
 
-    if _service_qwen_ready(wait_seconds=0.0):
-        llm._backend = "llama_server"
-        llm._model_path = model_dest_path(QWEN_MODEL["filename"])
-        if on_done:
-            on_done(True, "Models ready: Qwen + Nomic (service)")
+    # Avoid even short socket checks on UI thread; do this in background.
+    def _service_probe():
+        if _service_qwen_ready(wait_seconds=0.0):
+            llm._backend = "llama_server"
+            llm._model_path = model_dest_path(QWEN_MODEL["filename"])
+            if on_done:
+                on_done(True, "Models ready: Qwen + Nomic (service)")
+
+    threading.Thread(target=_service_probe, daemon=True).start()
 
 
 def init() -> None:

@@ -26,6 +26,8 @@ from kivy.clock             import Clock, mainthread
 from kivy.metrics           import dp, sp
 from kivy.graphics          import Color, RoundedRectangle, Rectangle
 from kivy.animation         import Animation
+from kivy.utils             import escape_markup
+from kivy.effects.scroll    import ScrollEffect
 
 # ── Palette ───────────────────────────────────────────────────────── #
 _BG        = (0.102, 0.102, 0.102, 1)   # #1a1a1a  page background
@@ -128,22 +130,35 @@ class MessageRow(BoxLayout):
         self.add_widget(self._lbl)
 
     def _on_tex(self, lbl, ts):
-        lbl.height    = ts[1] + dp(4)
-        lbl.text_size = (lbl.width or 1, None)
+        new_lbl_h = ts[1] + dp(4)
+        if abs(lbl.height - new_lbl_h) > 0.5:
+            lbl.height = new_lbl_h
+
         if self.role == "user" and hasattr(self, "_bub"):
-            self._bub.width  = min(ts[0] + dp(28), self.width * 0.82)
-            self._bub.height = lbl.height + dp(20)
-        self.height = max(lbl.height + dp(20), dp(52))
+            new_bub_w = min(ts[0] + dp(28), self.width * 0.82)
+            new_bub_h = lbl.height + dp(20)
+            if abs(self._bub.width - new_bub_w) > 0.5:
+                self._bub.width = new_bub_w
+            if abs(self._bub.height - new_bub_h) > 0.5:
+                self._bub.height = new_bub_h
+
+        new_row_h = max(lbl.height + dp(20), dp(52))
+        if abs(self.height - new_row_h) > 0.5:
+            self.height = new_row_h
 
     def _on_w(self, *_):
-        avail = self.width - dp(72)
+        avail = max(1, self.width - dp(72))
         if self.role == "user":
-            self._lbl.text_size = (avail * 0.82, None)
+            target = (avail * 0.82, None)
         else:
-            self._lbl.text_size = (avail, None)
+            target = (avail, None)
+        if self._lbl.text_size != target:
+            self._lbl.text_size = target
 
     def append(self, token: str):
-        self._lbl.text += token
+        # Streamed model tokens can contain markup-like fragments (e.g. "[" / "]")
+        # that make Kivy re-parse text repeatedly and cause visual glitches.
+        self._lbl.text += escape_markup(token)
 
 
 # ------------------------------------------------------------------ #
@@ -195,6 +210,7 @@ class AttachmentPreviewCard(BoxLayout):
         )
         # Truncate long filenames
         display = fname if len(fname) <= 22 else fname[:19] + "…"
+        display = escape_markup(display)
         name_lbl = Label(
             text=f"[b]{display}[/b]", markup=True,
             font_size=sp(12), color=_WHITE,
@@ -259,7 +275,7 @@ class DocStatusCard(BoxLayout):
         _paint(inner, _DOC_CARD, radius=14)
 
         self._title = Label(
-            text=f"[b]📄  {filename}[/b]",
+            text=f"[b]📄  {escape_markup(filename)}[/b]",
             markup=True,
             color=_WHITE, font_size=sp(13),
             size_hint_y=None, height=dp(22),
@@ -354,6 +370,7 @@ class ChatScreen(Screen):
         self._pending_attach: str | None              = None
         self._attach_card:    AttachmentPreviewCard | None = None
         self._scroll_pending: bool                   = False
+        self._streaming_active: bool                 = False
         self._model_ready:    bool                   = False   # True once LLM is loaded
         self._send_btn:       Button | None          = None    # ref for dimming
         self._build_ui()
@@ -386,6 +403,7 @@ class ChatScreen(Screen):
         # ── Message list ─────────────────────────────────────────────── #
         self._scroll = ScrollView(
             size_hint=(1, 1), do_scroll_x=False, bar_width=dp(3),
+            effect_cls=ScrollEffect,
         )
         _paint(self._scroll, _BG)
 
@@ -394,6 +412,8 @@ class ChatScreen(Screen):
             size_hint=(1, None), spacing=0,
         )
         self._msgs.bind(minimum_height=self._msgs.setter("height"))
+        # While streaming, keep the view pinned to the latest token without animations.
+        self._msgs.bind(height=lambda *_: self._on_msgs_height_changed())
         self._scroll.add_widget(self._msgs)
         root.add_widget(self._scroll)
 
@@ -760,8 +780,9 @@ class ChatScreen(Screen):
         if ok:
             self._has_docs = True
             self._rag_doc_name = fname
+            safe_name = escape_markup(fname)
             self._add_msg(
-                f"📄  [b]RAG mode active[/b] — {fname}\n"
+                f"📄  [b]RAG mode active[/b] — {safe_name}\n"
                 "I'll answer all your questions using this document.\n"
                 "[color=888888][size=12sp]"
                 "Type [b]quit rag[/b] to return to normal chat."
@@ -802,15 +823,23 @@ class ChatScreen(Screen):
         if not q and not path:
             return
 
+        # Avoid overlapping requests while a streamed response is active.
+        if self._streaming_active and not path:
+            self._add_msg(
+                "[color=bbbbbb]Please wait for the current response to finish.[/color]",
+                role="assistant",
+            )
+            return
+
         # "quit rag" command — exit RAG mode and reset docs
         if q.lower() in ("quit rag", "exit rag", "/quit rag", "/exit rag"):
             self._input.text = ""
-            self._add_msg(q, role="user")
+            self._add_msg(escape_markup(q), role="user")
             if self._has_docs:
                 from rag.pipeline import clear_all_documents
                 clear_all_documents()
                 self._has_docs     = False
-                doc = self._rag_doc_name
+                doc = escape_markup(self._rag_doc_name)
                 self._rag_doc_name = ""
                 self._add_msg(
                     f"💬  [b]RAG mode off[/b] — {doc} removed.\n"
@@ -844,9 +873,9 @@ class ChatScreen(Screen):
             fname = os.path.basename(path)
             self._remove_attachment()
             # Show a user bubble with the attachment + any typed text
-            bubble_text = f"📎  [b]{fname}[/b]"
+            bubble_text = f"📎  [b]{escape_markup(fname)}[/b]"
             if q:
-                bubble_text += f"\n{q}"
+                bubble_text += f"\n{escape_markup(q)}"
             self._add_msg(bubble_text, role="user")
             self._start_ingest(path, fname)
             return
@@ -856,7 +885,8 @@ class ChatScreen(Screen):
             return
 
         self._pending_q = q
-        self._add_msg(q, role="user")
+        self._streaming_active = True
+        self._add_msg(escape_markup(q), role="user")
         # Reset token buffer for new response
         self._token_buf.clear()
         if self._token_flush_ev is not None:
@@ -884,7 +914,7 @@ class ChatScreen(Screen):
         """
         self._token_buf.append(token)
         if self._token_flush_ev is None:
-            self._token_flush_ev = Clock.schedule_once(self._flush_tokens, 0.08)
+            self._token_flush_ev = Clock.schedule_once(self._flush_tokens, 0.12)
 
     @mainthread
     def _flush_tokens(self, *_):
@@ -898,9 +928,7 @@ class ChatScreen(Screen):
             self._current_row = self._add_msg("", role="assistant")
         if self._current_row:
             self._current_row.append(batch)
-            if not self._scroll_pending:
-                self._scroll_pending = True
-                Clock.schedule_once(self._do_scroll, 0.12)
+            self._scroll_to_bottom_instant()
 
     @mainthread
     def _on_done(self, success: bool, message: str):
@@ -942,6 +970,8 @@ class ChatScreen(Screen):
                 )
             else:
                 self._add_msg(message, role="assistant")
+        self._streaming_active = False
+        self._scroll_down()
         self._pending_q   = ""
         self._current_row = None
 
@@ -952,13 +982,19 @@ class ChatScreen(Screen):
     def _add_msg(self, text: str, role: str = "assistant") -> MessageRow:
         row = MessageRow(text, role=role)
         self._msgs.add_widget(row)
-        Clock.schedule_once(lambda *_: self._scroll_down(), 0.05)
+        if self._streaming_active:
+            Clock.schedule_once(lambda *_: self._scroll_to_bottom_instant(), 0.0)
+        else:
+            Clock.schedule_once(lambda *_: self._scroll_down(), 0.05)
         return row
 
     def _show_typing(self):
         self._typing = _TypingIndicator()
         self._msgs.add_widget(self._typing)
-        Clock.schedule_once(lambda *_: self._scroll_down(), 0.05)
+        if self._streaming_active:
+            Clock.schedule_once(lambda *_: self._scroll_to_bottom_instant(), 0.0)
+        else:
+            Clock.schedule_once(lambda *_: self._scroll_down(), 0.05)
 
     def _hide_typing(self):
         if self._typing:
@@ -967,9 +1003,17 @@ class ChatScreen(Screen):
             self._typing = None
 
     def _do_scroll(self, *_):
-        """Debounced scroll — called at most every 120 ms during streaming."""
+        """Debounced scroll during streaming (snap to bottom, no animation)."""
         self._scroll_pending = False
-        self._scroll_down()
+        self._scroll_to_bottom_instant()
+
+    def _on_msgs_height_changed(self):
+        if self._streaming_active:
+            self._scroll_to_bottom_instant()
+
+    def _scroll_to_bottom_instant(self):
+        Animation.stop_all(self._scroll, "scroll_y")
+        self._scroll.scroll_y = 0
 
     def _scroll_down(self):
         """Smoothly animate to bottom of chat."""
