@@ -59,6 +59,11 @@ _service_probe_lock = threading.Lock()
 _service_probe_active = False
 
 
+def _env_truthy(name: str) -> bool:
+    val = os.environ.get(name, "")
+    return str(val).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _start_android_service_best_effort() -> None:
     """Best-effort Android service start; no-op on desktop."""
     if not os.environ.get("ANDROID_PRIVATE"):
@@ -167,6 +172,7 @@ def _emit_progress(frac: float, text: str) -> None:
 def _wait_for_service_backend(
     qwen_path: str,
     timeout_seconds: float = 240.0,
+    allow_android_fallback: bool = True,
     fail_message: str = (
         "AI engine unavailable. Tap Retry to restart engine probe "
         "(network is only required for first-time downloads)."
@@ -223,6 +229,56 @@ def _wait_for_service_backend(
                 _emit_progress(0.98, msg)
                 time.sleep(delay)
                 delay = min(delay * 1.5, 10.0)
+
+            if os.environ.get("ANDROID_PRIVATE") and allow_android_fallback:
+                _set_bootstrap_state(
+                    overall_status="starting_engine",
+                    overall_text="Service not reachable. Starting local AI fallback...",
+                    qwen_status="Service unavailable. Switching to local fallback...",
+                )
+                _emit_progress(0.98, "Service not reachable. Starting local AI fallback...")
+
+                def _fallback_progress(frac: float, text: str) -> None:
+                    frac = max(0.0, min(1.0, frac))
+                    # Keep fallback progress near completion after downloads finish.
+                    overall = 0.98 + (frac * 0.02)
+                    _set_bootstrap_state(
+                        overall_status="starting_engine",
+                        overall_text=f"Local AI startup: {text}",
+                        overall_fraction=overall,
+                        qwen_status=text,
+                    )
+                    _emit_progress(overall, f"Local AI startup: {text}")
+
+                def _fallback_done(ok: bool, msg: str) -> None:
+                    if ok:
+                        _set_bootstrap_state(
+                            overall_status="ready",
+                            overall_text="Offline ready. AI engine loaded (local fallback).",
+                            overall_fraction=1.0,
+                            qwen_frac=1.0,
+                            qwen_status="Ready (local fallback)",
+                            nomic_frac=1.0,
+                            nomic_status="Ready",
+                        )
+                        if _auto_dl_done_cb:
+                            _auto_dl_done_cb(True, "Models ready: Qwen + Nomic (local fallback)")
+                        return
+
+                    _set_bootstrap_state(
+                        overall_status="error",
+                        overall_text=fail_message,
+                        qwen_status=f"Fallback failed: {msg}",
+                    )
+                    if _auto_dl_done_cb:
+                        _auto_dl_done_cb(False, f"{fail_message}\nFallback error: {msg}")
+
+                load_model(
+                    qwen_path,
+                    on_progress=_fallback_progress,
+                    on_done=_fallback_done,
+                )
+                return
 
             _set_bootstrap_state(
                 overall_status="error",
@@ -287,7 +343,12 @@ def _start_auto_download() -> None:
         # Android policy: service-first only. Do not fallback to in-app load.
         if os.environ.get("ANDROID_PRIVATE"):
             _start_android_service_best_effort()
-            _wait_for_service_backend(qwen_path)
+            # Preserve service-first startup, but avoid permanent retry dead-ends.
+            # Set ORAG_ANDROID_SERVICE_ONLY=1 to force strict service-only mode.
+            _wait_for_service_backend(
+                qwen_path,
+                allow_android_fallback=not _env_truthy("ORAG_ANDROID_SERVICE_ONLY"),
+            )
             return
 
         # Prefer the service-owned Qwen server if it is up.
