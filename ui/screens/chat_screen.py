@@ -215,18 +215,18 @@ class AttachmentPreviewCard(BoxLayout):
         name_lbl = Label(
             text=f"[b]{display}[/b]", markup=True,
             font_size=sp(12), color=_WHITE,
-            halign="left", valign="bottom",
+            halign="left", valign="middle",
             size_hint_y=None, height=dp(22),
         )
-        name_lbl.bind(size=lambda w, _: setattr(w, "text_size", (w.width, None)))
+        name_lbl.bind(size=lambda w, _: setattr(w, "text_size", (w.width, w.height)))
 
         type_lbl = Label(
             text=f"{ext} - {size_txt}" if size_txt else ext,
             font_size=sp(10.5), color=_MUTED,
-            halign="left", valign="top",
+            halign="left", valign="middle",
             size_hint_y=None, height=dp(18),
         )
-        type_lbl.bind(size=lambda w, _: setattr(w, "text_size", (w.width, None)))
+        type_lbl.bind(size=lambda w, _: setattr(w, "text_size", (w.width, w.height)))
 
         info.add_widget(name_lbl)
         info.add_widget(type_lbl)
@@ -242,7 +242,7 @@ class AttachmentPreviewCard(BoxLayout):
         x_btn.bind(on_release=lambda *_: on_remove())
         anc = AnchorLayout(
             size_hint=(None, 1), width=dp(28),
-            anchor_x="center", anchor_y="top",
+            anchor_x="center", anchor_y="center",
         )
         anc.add_widget(x_btn)
         self.add_widget(anc)
@@ -394,11 +394,13 @@ class ChatScreen(Screen):
             padding=[dp(16), dp(0)],
         )
         _paint(hdr, _HDR_BG)
-        hdr.add_widget(Label(
+        hdr_lbl = Label(
             text="[b]O-RAG[/b]", markup=True,
             color=_WHITE, font_size=sp(16),
             halign="center", valign="middle",
-        ))
+        )
+        hdr_lbl.bind(size=lambda w, _: setattr(w, "text_size", (w.width, w.height)))
+        hdr.add_widget(hdr_lbl)
         root.add_widget(hdr)
 
         sep = Widget(size_hint=(1, None), height=dp(1))

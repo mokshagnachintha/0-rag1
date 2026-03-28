@@ -62,12 +62,14 @@ class ModelRow(BoxLayout):
     def _build(self):
         # top row: name + size tag
         top = BoxLayout(size_hint=(1, None), height=dp(24))
-        top.add_widget(Label(
+        top_lbl = Label(
             text=self.meta["label"],
             halign="left", valign="middle",
             font_size=sp(12), color=(1, 1, 1, 1),
-            text_size=(None, None), size_hint=(1, 1),
-        ))
+            size_hint=(1, 1),
+        )
+        top_lbl.bind(size=lambda w, _: setattr(w, "text_size", (w.width, w.height)))
+        top.add_widget(top_lbl)
         self.add_widget(top)
 
         # bottom row: status label + action button
@@ -77,6 +79,9 @@ class ModelRow(BoxLayout):
             text="", size_hint=(1, 1),
             font_size=sp(10), halign="left", valign="middle",
             color=(0.65, 0.65, 0.65, 1),
+        )
+        self._status_lbl.bind(
+            size=lambda w, _: setattr(w, "text_size", (w.width, w.height))
         )
         bottom.add_widget(self._status_lbl)
 
@@ -216,11 +221,13 @@ class SettingsScreen(Screen):
             self._hdr_rect = RoundedRectangle(radius=[0])
         header.bind(pos=lambda w, _: setattr(self._hdr_rect, "pos", w.pos),
                     size=lambda w, _: setattr(self._hdr_rect, "size", w.size))
-        header.add_widget(Label(
+        hdr_lbl = Label(
             text="[b]Models[/b]", markup=True,
             color=(1, 1, 1, 1), font_size=sp(16),
             halign="center", valign="middle",
-        ))
+        )
+        hdr_lbl.bind(size=lambda w, _: setattr(w, "text_size", (w.width, w.height)))
+        header.add_widget(hdr_lbl)
         root.add_widget(header)
 
         # ---- auto-download banner (collapsed when idle) ----
@@ -243,6 +250,9 @@ class SettingsScreen(Screen):
             font_size=sp(11), halign="left", valign="middle",
             color=(0.85, 0.92, 1.0, 1),
         )
+        self._dl_lbl.bind(
+            size=lambda w, _: setattr(w, "text_size", (w.width, w.height))
+        )
         self._dl_prog = ProgressBar(
             max=100, value=0,
             size_hint=(1, None), height=dp(8),
@@ -260,6 +270,9 @@ class SettingsScreen(Screen):
             halign="left", valign="middle",
             color=(0.9, 0.6, 0.3, 1),
         )
+        self._model_lbl.bind(
+            size=lambda w, _: setattr(w, "text_size", (w.width, w.height))
+        )
         status_row.add_widget(self._model_lbl)
         unload_btn = Button(
             text="Unload", size_hint=(None, 1), width=dp(72),
@@ -271,12 +284,14 @@ class SettingsScreen(Screen):
         root.add_widget(status_row)
 
         # ---- section label ----
-        root.add_widget(Label(
+        section_lbl = Label(
             text="  Gemma models (tap Download then Load):",
             size_hint=(1, None), height=dp(26),
-            font_size=sp(11), halign="left",
+            font_size=sp(11), halign="left", valign="middle",
             color=(0.6, 0.6, 0.6, 1),
-        ))
+        )
+        section_lbl.bind(size=lambda w, _: setattr(w, "text_size", (w.width, w.height)))
+        root.add_widget(section_lbl)
 
         # ---- Gemma model catalogue ----
         scroll = ScrollView(size_hint=(1, 1))
@@ -297,12 +312,14 @@ class SettingsScreen(Screen):
         root.add_widget(scroll)
 
         # ---- manual path ----
-        root.add_widget(Label(
+        manual_lbl = Label(
             text="  Or load a local .gguf file manually:",
             size_hint=(1, None), height=dp(24),
-            font_size=sp(11), halign="left",
+            font_size=sp(11), halign="left", valign="middle",
             color=(0.6, 0.6, 0.6, 1),
-        ))
+        )
+        manual_lbl.bind(size=lambda w, _: setattr(w, "text_size", (w.width, w.height)))
+        root.add_widget(manual_lbl)
         bar = BoxLayout(
             size_hint=(1, None), height=dp(60),
             spacing=dp(8), padding=[dp(12), dp(8)],
@@ -334,7 +351,11 @@ class SettingsScreen(Screen):
 
         self._status = Label(
             text="", size_hint=(1, None), height=dp(26),
-            font_size=sp(11), color=(0.5, 0.9, 0.5, 1),
+            font_size=sp(11), halign="left", valign="middle",
+            color=(0.5, 0.9, 0.5, 1),
+        )
+        self._status.bind(
+            size=lambda w, _: setattr(w, "text_size", (w.width, w.height))
         )
         root.add_widget(self._status)
         self.add_widget(root)
