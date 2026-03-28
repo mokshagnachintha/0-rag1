@@ -30,9 +30,6 @@ from kivy.animation         import Animation
 from kivy.utils             import escape_markup
 from kivy.effects.scroll    import ScrollEffect
 
-from rag.debug_logger import debug_log, is_debug_logger_enabled
-from ui.screens.debug_logger_overlay import DebugLoggerOverlay
-
 # Palette
 _BG        = (0.102, 0.102, 0.102, 1)   # #1a1a1a  page background
 _HDR_BG    = (0.078, 0.078, 0.078, 1)   # #141414  header strip
@@ -526,9 +523,6 @@ class ChatScreen(Screen):
         self._welcome_sent:   bool                   = False
         self._perm_requested: bool                   = False
         self._last_model_update_at: float            = 0.0
-        self._debug_enabled: bool                    = is_debug_logger_enabled()
-        self._debug_overlay: DebugLoggerOverlay | None = None
-        debug_log("ui.chat", f"ChatScreen init (debug_logger={self._debug_enabled})")
         self._build_ui()
 
     # ---------------------------------------------------------------- #
@@ -542,11 +536,9 @@ class ChatScreen(Screen):
         # Header
         hdr = BoxLayout(
             size_hint=(1, None), height=dp(54),
-            padding=[dp(10), dp(0), dp(10), dp(0)],
-            spacing=dp(8),
+            padding=[dp(16), dp(0)],
         )
         _paint(hdr, _HDR_BG)
-        hdr.add_widget(Widget(size_hint=(None, 1), width=dp(56)))
         hdr_lbl = Label(
             text="[b]O-RAG[/b]", markup=True,
             color=_WHITE, font_size=sp(16),
@@ -554,29 +546,6 @@ class ChatScreen(Screen):
         )
         hdr_lbl.bind(size=lambda w, _: setattr(w, "text_size", (w.width, w.height)))
         hdr.add_widget(hdr_lbl)
-
-        right = AnchorLayout(
-            size_hint=(None, 1),
-            width=dp(56),
-            anchor_x="right",
-            anchor_y="center",
-        )
-        if self._debug_enabled:
-            log_btn = Button(
-                text="LOG",
-                size_hint=(None, None),
-                size=(dp(50), dp(30)),
-                font_size=sp(11),
-                bold=True,
-                background_normal="",
-                background_color=(0.24, 0.29, 0.37, 1),
-                color=_WHITE,
-            )
-            log_btn.bind(on_release=self._open_debug_logger)
-            right.add_widget(log_btn)
-        else:
-            right.add_widget(Widget())
-        hdr.add_widget(right)
         root.add_widget(hdr)
 
         sep = Widget(size_hint=(1, None), height=dp(1))
@@ -701,21 +670,12 @@ class ChatScreen(Screen):
     # ---------------------------------------------------------------- #
 
     def _register_pipeline_callbacks(self, *_):
-        debug_log("ui.chat", "Registering pipeline bootstrap callbacks")
         from rag.pipeline import register_auto_download_callbacks
         register_auto_download_callbacks(
             on_progress=self._on_model_progress,
             on_done    =self._on_model_ready,
             on_state   =self._on_bootstrap_state,
         )
-
-    def _open_debug_logger(self, *_):
-        if not self._debug_enabled:
-            return
-        if self._debug_overlay is None:
-            self._debug_overlay = DebugLoggerOverlay()
-        debug_log("ui.chat", "Opening debug logger overlay")
-        self._debug_overlay.open()
 
     @mainthread
     def _on_model_progress(self, frac: float, text: str):
@@ -736,7 +696,6 @@ class ChatScreen(Screen):
             self._bootstrap_card.update_state(state)
 
     def _on_retry_engine_start(self, *_):
-        debug_log("ui.chat", "Retry engine startup tapped")
         if self._bootstrap_card:
             self._bootstrap_card.set_retrying()
         self._start_android_service_once(force=True)
@@ -748,7 +707,6 @@ class ChatScreen(Screen):
 
     @mainthread
     def _on_model_ready(self, success: bool, message: str):
-        debug_log("ui.chat", f"Model ready callback: success={success} message={message}")
         if success:
             self._model_ready = True
             if self._send_btn:
@@ -815,20 +773,16 @@ class ChatScreen(Screen):
     def _start_android_service_once(self, force: bool = False):
         """Start Android foreground service helper (no-op on desktop)."""
         if self._service_started and not force:
-            debug_log("ui.chat.service", "Service start skipped (already started)")
             return
-        debug_log("ui.chat.service", f"Service start requested (force={force})")
         try:
             from android import AndroidService  # type: ignore
             svc = AndroidService("O-RAG AI Engine", "AI engine running in background")
             svc.start("start")
             self._service_started = True
             print("[chat] Android foreground service started.")
-            debug_log("ui.chat.service", "Service start call issued")
         except Exception as e:
             # Desktop or unavailable android APIs.
             print(f"[chat] Service start skipped: {e}")
-            debug_log("ui.chat.service", f"Service start skipped: {e}", level="WARN")
 
     # ---------------------------------------------------------------- #
     #  Attach document via file picker                                  #
