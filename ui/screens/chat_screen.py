@@ -12,6 +12,7 @@ Design:
   • Model download / loading progress shown in the welcome message.
 """
 from __future__ import annotations
+import time
 
 from kivy.uix.screenmanager import Screen
 from kivy.uix.boxlayout     import BoxLayout
@@ -374,6 +375,10 @@ class ChatScreen(Screen):
         self._service_started: bool                  = False
         self._model_ready:    bool                   = False   # True once LLM is loaded
         self._send_btn:       Button | None          = None    # ref for dimming
+        self._perm_requested: bool                   = False
+        self._last_model_stage: str                  = ""
+        self._last_model_pct: int                    = -1
+        self._last_model_update_at: float            = 0.0
         self._build_ui()
 
     # ---------------------------------------------------------------- #
@@ -536,6 +541,25 @@ class ChatScreen(Screen):
             icon  = "\u23f3"
 
         pct    = int(min(frac, 0.999) * 100)
+
+        # Throttle expensive label re-rendering to keep UI responsive
+        # during long downloads on slower Android devices.
+        now = time.monotonic()
+        stage_changed = stage != self._last_model_stage
+        pct_changed = pct != self._last_model_pct
+        must_render = (
+            stage_changed
+            or pct_changed
+            or pct >= 99
+            or (now - self._last_model_update_at) >= 0.75
+        )
+        if not must_render:
+            return
+
+        self._last_model_stage = stage
+        self._last_model_pct = pct
+        self._last_model_update_at = now
+
         filled = "\u2588" * (pct // 10)
         empty  = "\u2591" * (10 - pct // 10)
         bar    = f"[color=19c37d]{filled}[/color][color=555555]{empty}[/color]"
@@ -560,8 +584,8 @@ class ChatScreen(Screen):
                 "• Tap [b]＋[/b] to attach a [b]PDF[/b] or [b]TXT[/b] — "
                 "I'll answer questions about its content."
             )
-            self._start_android_service_once()
-            self._request_storage_permissions()
+            # Keep the model-ready callback lightweight to reduce ANR risk.
+            Clock.schedule_once(lambda *_: self._start_android_service_once(), 0.05)
         else:
             self._model_ready = False
             self._welcome._lbl.text = (
@@ -574,10 +598,13 @@ class ChatScreen(Screen):
     # ---------------------------------------------------------------- #
 
     def _request_storage_permissions(self, *_):
-        """Ask for storage permissions on Android right after model loads."""
+        """Ask for storage permissions on Android before opening picker."""
         import os
         if not os.environ.get("ANDROID_PRIVATE"):
             return  # desktop — no-op
+        if self._perm_requested:
+            return
+        self._perm_requested = True
         try:
             from android.permissions import request_permissions, Permission  # type: ignore
             sdk = 0
@@ -629,6 +656,8 @@ class ChatScreen(Screen):
         self._picker_open = True
         import os
         if os.environ.get("ANDROID_PRIVATE"):
+            # On-demand permission request instead of model-ready prompt.
+            self._request_storage_permissions()
             self._android_pick_file()
         else:
             self._desktop_pick_file()
