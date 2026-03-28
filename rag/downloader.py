@@ -14,6 +14,8 @@ import os
 import shutil
 import threading
 import time
+import urllib.error
+import urllib.request
 from typing import Callable, Optional
 
 
@@ -158,9 +160,80 @@ def _get_hf_hub():
         from huggingface_hub import hf_hub_download
         return hf_hub_download
     except ImportError:
-        raise RuntimeError(
-            "huggingface_hub is not installed. Install it with: pip install huggingface-hub"
-        )
+        return None
+
+
+def _hf_resolve_url(repo_id: str, filename: str, revision: str) -> str:
+    # Public, unauthenticated download URL
+    return f"https://huggingface.co/{repo_id}/resolve/{revision}/{filename}?download=true"
+
+
+def _download_via_http(
+    repo_id: str,
+    filename: str,
+    revision: str,
+    dest: str,
+    expected_size_mb: int = 0,
+    on_progress: Optional[Callable[[float, str], None]] = None,
+) -> None:
+    """
+    Fallback downloader when huggingface_hub is unavailable on-device.
+    Supports best-effort resume via HTTP Range requests.
+    """
+    url = _hf_resolve_url(repo_id, filename, revision)
+    part = dest + ".part"
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+
+    start = 0
+    if os.path.isfile(part):
+        try:
+            start = os.path.getsize(part)
+        except Exception:
+            start = 0
+
+    headers = {"User-Agent": "O-RAG/1.0"}
+    if start > 0:
+        headers["Range"] = f"bytes={start}-"
+
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        status = getattr(resp, "status", 200)
+        content_len = int(resp.headers.get("Content-Length", "0") or "0")
+
+        # If server ignored Range and returned full content, restart part file.
+        if start > 0 and status != 206:
+            start = 0
+            try:
+                os.remove(part)
+            except Exception:
+                pass
+
+        total = 0
+        if status == 206 and content_len > 0:
+            total = start + content_len
+        elif content_len > 0:
+            total = content_len
+        elif expected_size_mb > 0:
+            total = int(expected_size_mb * 1_048_576)
+
+        mode = "ab" if start > 0 else "wb"
+        done = start
+        with open(part, mode) as f:
+            while True:
+                chunk = resp.read(1024 * 512)
+                if not chunk:
+                    break
+                f.write(chunk)
+                done += len(chunk)
+
+                if on_progress:
+                    if total > 0:
+                        frac = min(done / total, 0.99)
+                        on_progress(frac, f"{done/1_048_576:.0f} / {total/1_048_576:.0f} MB")
+                    else:
+                        on_progress(0.05, f"{done/1_048_576:.0f} MB downloaded...")
+
+    os.replace(part, dest)
 
 
 def download_model(
@@ -192,15 +265,32 @@ def download_model(
                 on_done(True, dest)
             return
 
-        try:
-            hf_hub_download = _get_hf_hub()
-        except Exception as exc:
-            if on_done:
-                on_done(False, f"Downloader unavailable: {exc}")
-            return
+        hf_hub_download = _get_hf_hub()
 
         if on_progress:
             on_progress(0.02, "Connecting to Hugging Face...")
+
+        if hf_hub_download is None:
+            try:
+                _download_via_http(
+                    repo_id=repo_id,
+                    filename=filename,
+                    revision=revision,
+                    dest=dest,
+                    expected_size_mb=expected_size_mb,
+                    on_progress=on_progress,
+                )
+                if on_progress:
+                    on_progress(1.0, "Download complete.")
+                if on_done:
+                    on_done(True, dest)
+            except urllib.error.URLError as exc:
+                if on_done:
+                    on_done(False, f"Download failed (network): {exc}")
+            except Exception as exc:
+                if on_done:
+                    on_done(False, f"Download failed: {exc}")
+            return
 
         # Use local manifest size for progress tracking; avoids extra metadata
         # calls that can stall/fail on some Android networks.
