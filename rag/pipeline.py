@@ -59,20 +59,6 @@ _service_probe_lock = threading.Lock()
 _service_probe_active = False
 
 
-def _start_android_service_best_effort() -> None:
-    """Best-effort Android service start; no-op on desktop."""
-    if not os.environ.get("ANDROID_PRIVATE"):
-        return
-    try:
-        from android import AndroidService  # type: ignore
-
-        svc = AndroidService("O-RAG AI Engine", "AI engine running in background")
-        svc.start("start")
-    except Exception:
-        # Keep silent here; probe state UI will reflect actual health.
-        pass
-
-
 def _service_qwen_ready(wait_seconds: float = 0.0, per_try_timeout: float = 0.35) -> bool:
     import urllib.request
 
@@ -184,7 +170,6 @@ def _wait_for_service_backend(
             start = time.time()
             delay = 1.0
             attempt = 0
-            _start_android_service_best_effort()
             _set_bootstrap_state(
                 overall_status="starting_engine",
                 overall_text="Starting AI engine...",
@@ -211,9 +196,6 @@ def _wait_for_service_backend(
                     return
 
                 attempt += 1
-                if attempt % 3 == 0:
-                    # Service-first policy: reassert service start during long waits.
-                    _start_android_service_best_effort()
                 msg = f"Starting AI engine... retry {attempt}"
                 _set_bootstrap_state(
                     overall_status="starting_engine",
@@ -286,7 +268,6 @@ def _start_auto_download() -> None:
 
         # Android policy: service-first only. Do not fallback to in-app load.
         if os.environ.get("ANDROID_PRIVATE"):
-            _start_android_service_best_effort()
             _wait_for_service_backend(qwen_path)
             return
 

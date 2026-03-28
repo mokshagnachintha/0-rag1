@@ -6,6 +6,6 @@ model_tmp/
 .buildozer/
 __pycache__/
 *.pyc
-.env
+
 llamacpp_bin/
 
