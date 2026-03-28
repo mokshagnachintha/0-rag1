@@ -9,7 +9,7 @@ Design:
     - Document ingestion progress shown inline as a status card.
     - Once any doc is loaded the AI auto-answers from it (RAG mode).
     - With no docs, the AI just chats freely (direct mode).
-  • Model loading / extraction progress shown in the welcome message.
+  • Model download / loading progress shown in the welcome message.
 """
 from __future__ import annotations
 
@@ -400,7 +400,7 @@ class ChatScreen(Screen):
         # Welcome message — text updated when model is ready
         self._welcome = self._add_msg(
             "Hello! I'm your offline AI assistant.\n\n"
-            "⏳  [b]Preparing model…[/b] This may take a moment on first launch.",
+            "⏳  [b]Downloading AI models (first launch only)...[/b]",
             role="assistant",
         )
 
@@ -501,17 +501,17 @@ class ChatScreen(Screen):
     def _on_model_progress(self, frac: float, text: str):
         # Determine which stage we are in based on the progress text
         txt_lo = text.lower()
-        if "extract" in txt_lo:
-            stage = "\u2699\ufe0f  [b]Extracting model from APK\u2026[/b]"
-            icon  = "\u2699\ufe0f"
+        if "offline ready" in txt_lo or "cached" in txt_lo:
+            stage = "\u2705  [b]Offline ready[/b]"
+            icon  = "\u2705"
         elif "start" in txt_lo or "engine" in txt_lo or "loading model" in txt_lo:
-            stage = "\u26a1  [b]Starting AI engine\u2026[/b]"
+            stage = "\u26a1  [b]Starting AI engine...[/b]"
             icon  = "\u26a1"
         elif "connect" in txt_lo or "hugging" in txt_lo or "download" in txt_lo or "/" in text:
-            stage = "\u2b07\ufe0f  [b]Downloading model\u2026[/b]"
+            stage = "\u2b07\ufe0f  [b]Downloading AI models (first launch only)...[/b]"
             icon  = "\u2b07\ufe0f"
         else:
-            stage = "\u23f3  [b]Preparing\u2026[/b]"
+            stage = "\u23f3  [b]Preparing AI models...[/b]"
             icon  = "\u23f3"
 
         pct    = int(min(frac, 0.999) * 100)
@@ -534,7 +534,7 @@ class ChatScreen(Screen):
                 self._send_btn.color = _WHITE
                 self._send_btn.opacity = 1.0
             self._welcome._lbl.text = (
-                "👋  [b]How can I assist you today?[/b]\n\n"
+                "👋  [b]Offline ready. How can I assist you today?[/b]\n\n"
                 "• Just type a message to chat with me.\n"
                 "• Tap [b]＋[/b] to attach a [b]PDF[/b] or [b]TXT[/b] — "
                 "I'll answer questions about its content."
@@ -544,7 +544,7 @@ class ChatScreen(Screen):
             self._model_ready = False
             self._welcome._lbl.text = (
                 f"[color=ff5555]⚠  Model failed to load:[/color]\n{message}\n\n"
-                "Check your connection and restart the app."
+                "Network is required only for first-time setup. Check your connection and retry."
             )
 
     # ---------------------------------------------------------------- #
@@ -827,7 +827,7 @@ class ChatScreen(Screen):
         # Block sends until the LLM is ready
         if not self._model_ready:
             self._add_msg(
-                "⚡  [b]AI engine is still starting up…[/b]\n"
+                "⚡  [b]AI engine is still starting up...[/b]\n"
                 "[color=888888][size=12sp]"
                 "You can watch the progress in the welcome panel above. "
                 "Please send your message once it's ready."

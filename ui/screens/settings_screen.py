@@ -1,5 +1,5 @@
 """
-settings_screen.py — Model management:
+settings_screen.py â€” Model management:
    Browse & download Gemma GGUF models straight from Hugging Face
    See download progress live
    Load / unload models into llama-cpp-python
@@ -32,10 +32,10 @@ class ModelRow(BoxLayout):
     One row in the Gemma catalogue.
 
     States:
-         "ready"       — file already in models/  show Load button
-         "download"    — not yet downloaded  show Download button
-         "downloading" — in-progress  show progress bar
-         "loaded"      — currently loaded in llama.cpp
+         "ready"       â€” file already in models/  show Load button
+         "download"    â€” not yet downloaded  show Download button
+         "downloading" â€” in-progress  show progress bar
+         "loaded"      â€” currently loaded in llama.cpp
     """
 
     def __init__(self, meta: dict, on_load, **kw):
@@ -151,6 +151,7 @@ class ModelRow(BoxLayout):
             download_model(
                 repo_id     = self.meta["repo_id"],
                 filename    = self.meta["filename"],
+                min_bytes   = int(self.meta.get("min_bytes", 1)),
                 on_progress = self._on_progress,
                 on_done     = self._on_download_done,
             )

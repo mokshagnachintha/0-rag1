@@ -1,101 +1,151 @@
 """
-downloader.py — Download Gemma GGUF models from Hugging Face Hub.
+downloader.py - Download and cache GGUF models from Hugging Face.
 
-Uses `huggingface_hub.hf_hub_download` which:
-  • Resumes interrupted downloads automatically
-  • Verifies SHA-256 integrity after download
-  • Reports byte-level download progress via tqdm callback
-
-Default auto-download (runs on first app launch, no login required):
-  mradermacher/Gemma-3-1B-it-GLM-4.7-Flash-Heretic-Uncensored-Thinking-i1-GGUF
-  →  Gemma-3-1B-it-GLM-4.7-Flash-Heretic-Uncensored-Thinking.i1-Q4_K_M.gguf (~806 MB)
-
-Full catalogue (user can pick any in Settings — all Apache 2.0, no login needed):
-  i1-Q2_K    ~690 MB  (smallest)
-  i1-Q4_K_M  ~806 MB  ← AUTO (recommended)
-  i1-Q5_K_M  ~851 MB
-  i1-Q6_K    ~1.0 GB  (highest quality)
+This module now follows a download-only bootstrap flow:
+  * No APK model extraction
+  * Models are downloaded once on first launch
+  * Bootstrap state is recorded in models/bootstrap_state.json
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import shutil
 import threading
-from pathlib import Path
+import time
 from typing import Callable, Optional
 
 
 # ------------------------------------------------------------------ #
-#  Catalogue of available Mobile RAG GGUF models                     #
+#  Model manifest (pinned sources)                                   #
 # ------------------------------------------------------------------ #
 
-# The primary Generation model
 QWEN_MODEL: dict = {
-    "label":    "Qwen 2.5 1.5B Instruct Q4_K_M (~1.1 GB)",
-    "repo_id":  "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+    "label": "Qwen 2.5 1.5B Instruct Q4_K_M (~1.1 GB)",
+    "repo_id": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
     "filename": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-    "size_mb":  1120,
+    "revision": "main",
+    "size_mb": 1120,
+    "min_bytes": 500 * 1024 * 1024,
 }
 
-# The primary Embedding model
 NOMIC_MODEL: dict = {
-    "label":    "Nomic Embed Text v1.5 Q4_K_M (~80 MB)",
-    "repo_id":  "nomic-ai/nomic-embed-text-v1.5-GGUF",
+    "label": "Nomic Embed Text v1.5 Q4_K_M (~80 MB)",
+    "repo_id": "nomic-ai/nomic-embed-text-v1.5-GGUF",
     "filename": "nomic-embed-text-v1.5.Q4_K_M.gguf",
-    "size_mb":  80,
+    "revision": "main",
+    "size_mb": 80,
+    "min_bytes": 30 * 1024 * 1024,
 }
 
 MOBILE_MODELS: list[dict] = [QWEN_MODEL, NOMIC_MODEL]
 
 
 # ------------------------------------------------------------------ #
-#  Destination directory (same as llm.py models dir)                  #
+#  Paths and bootstrap state                                         #
 # ------------------------------------------------------------------ #
 
-# App root: rag/downloader.py → ../..
-_APP_ROOT_DL = Path(__file__).resolve().parent.parent
+_BOOTSTRAP_FILE = "bootstrap_state.json"
+_BOOTSTRAP_SCHEMA = 1
 
 
 def _models_dir() -> str:
     base = os.environ.get("ANDROID_PRIVATE", os.path.expanduser("~"))
-    d = os.path.join(base, "models")
-    os.makedirs(d, exist_ok=True)
-    return d
+    dest = os.path.join(base, "models")
+    os.makedirs(dest, exist_ok=True)
+    return dest
 
 
 def model_dest_path(filename: str) -> str:
     return os.path.join(_models_dir(), filename)
 
 
+def _bootstrap_state_path() -> str:
+    return os.path.join(_models_dir(), _BOOTSTRAP_FILE)
+
+
+def _manifest_payload() -> dict:
+    return {
+        "schema": _BOOTSTRAP_SCHEMA,
+        "models": [
+            {
+                "repo_id": m["repo_id"],
+                "filename": m["filename"],
+                "revision": m.get("revision", "main"),
+            }
+            for m in MOBILE_MODELS
+        ],
+    }
+
+
+def _manifest_hash() -> str:
+    payload = json.dumps(_manifest_payload(), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _load_bootstrap_state() -> dict:
+    path = _bootstrap_state_path()
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_bootstrap_state() -> None:
+    state = {
+        "schema": _BOOTSTRAP_SCHEMA,
+        "manifest_hash": _manifest_hash(),
+        "completed_at": int(time.time()),
+        "models": [
+            {
+                "filename": m["filename"],
+                "repo_id": m["repo_id"],
+                "revision": m.get("revision", "main"),
+                "size_bytes": os.path.getsize(model_dest_path(m["filename"]))
+                if os.path.isfile(model_dest_path(m["filename"]))
+                else 0,
+            }
+            for m in MOBILE_MODELS
+        ],
+    }
+    tmp = _bootstrap_state_path() + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2)
+    os.replace(tmp, _bootstrap_state_path())
+
+
+def _is_model_file_ready(meta: dict) -> bool:
+    path = model_dest_path(meta["filename"])
+    min_bytes = int(meta.get("min_bytes", 1 * 1024 * 1024))
+    return os.path.isfile(path) and os.path.getsize(path) >= min_bytes
+
+
+def _is_bootstrap_complete() -> bool:
+    state = _load_bootstrap_state()
+    if not state:
+        return False
+    if state.get("schema") != _BOOTSTRAP_SCHEMA:
+        return False
+    if state.get("manifest_hash") != _manifest_hash():
+        return False
+    return all(_is_model_file_ready(meta) for meta in MOBILE_MODELS)
+
+
 def is_downloaded(filename: str) -> bool:
-    return os.path.isfile(model_dest_path(filename)) or _bundled_model_path(filename) is not None
-
-
-def _bundled_model_path(filename: str) -> Optional[str]:
-    """
-    Return the path to the GGUF if it was bundled inside the APK or
-    sits in the project root (desktop).  Returns None if not found.
-
-    On Android, python-for-android extracts all app files to the
-    directory pointed to by ANDROID_APP_PATH (p4a >= 2023.09) or to
-    $ANDROID_PRIVATE/app/ on older builds.
-    """
-    candidates = [
-        # Desktop / development: model sitting next to main.py
-        str(_APP_ROOT_DL / filename),
-        # Android: p4a extracts app files to ANDROID_APP_PATH
-        os.path.join(os.environ.get("ANDROID_APP_PATH", ""), filename),
-        # Android alternative layout (older p4a)
-        os.path.join(os.environ.get("ANDROID_PRIVATE", ""), "app", filename),
-    ]
-    for path in candidates:
-        if path and os.path.isfile(path):
-            return path
-    return None
+    for meta in MOBILE_MODELS:
+        if meta["filename"] == filename:
+            return _is_model_file_ready(meta)
+    path = model_dest_path(filename)
+    return os.path.isfile(path) and os.path.getsize(path) > 0
 
 
 # ------------------------------------------------------------------ #
-#  Download logic                                                      #
+#  Download helpers                                                  #
 # ------------------------------------------------------------------ #
 
 def _get_hf_hub():
@@ -104,16 +154,15 @@ def _get_hf_hub():
         return hf_hub_download
     except ImportError:
         raise RuntimeError(
-            "huggingface_hub is not installed.\n"
-            "Install it with: pip install huggingface-hub"
+            "huggingface_hub is not installed. Install it with: pip install huggingface-hub"
         )
 
 
-def _expected_bytes(repo_id: str, filename: str) -> int:
-    """Return the file size in bytes from the HF Hub metadata (no download)."""
+def _expected_bytes(repo_id: str, filename: str, revision: str = "main") -> int:
     try:
         from huggingface_hub import get_hf_file_metadata, hf_hub_url
-        url  = hf_hub_url(repo_id=repo_id, filename=filename)
+
+        url = hf_hub_url(repo_id=repo_id, filename=filename, revision=revision)
         meta = get_hf_file_metadata(url)
         return meta.size or 0
     except Exception:
@@ -121,25 +170,27 @@ def _expected_bytes(repo_id: str, filename: str) -> int:
 
 
 def download_model(
-    repo_id:     str,
-    filename:    str,
+    repo_id: str,
+    filename: str,
+    revision: str = "main",
+    min_bytes: int = 1,
+    force_download: bool = False,
     on_progress: Optional[Callable[[float, str], None]] = None,
-    on_done:     Optional[Callable[[bool, str], None]]  = None,
+    on_done: Optional[Callable[[bool, str], None]] = None,
 ) -> None:
     """
     Download a GGUF file from Hugging Face to the local models/ folder.
     Runs in a background thread.
-
-    Progress is reported by polling the partial file size every 0.5 s,
-    so it works with any version of huggingface_hub.
-
-    on_progress(fraction 0-1, status_text) — called ~2×/sec during download
-    on_done(success, dest_path_or_error)   — called on completion
     """
+
     def _run():
         dest = model_dest_path(filename)
 
-        if os.path.isfile(dest):
+        if (
+            not force_download
+            and os.path.isfile(dest)
+            and os.path.getsize(dest) >= max(1, int(min_bytes))
+        ):
             if on_progress:
                 on_progress(1.0, "Already downloaded.")
             if on_done:
@@ -151,44 +202,48 @@ def download_model(
         if on_progress:
             on_progress(0.0, "Connecting to Hugging Face...")
 
-        # Fetch expected file size before download starts
-        total_bytes = _expected_bytes(repo_id, filename)
-
-        # --- progress poller (runs in its own thread) ---
-        _stop_poll = threading.Event()
+        total_bytes = _expected_bytes(repo_id, filename, revision=revision)
+        stop_poll = threading.Event()
 
         def _poller():
-            # huggingface_hub writes to a .incomplete temp file first
-            inc_path = dest + ".incomplete"
-            while not _stop_poll.wait(0.5):
-                check = inc_path if os.path.isfile(inc_path) else dest
+            incomplete_candidates = [
+                dest + ".incomplete",
+                dest + ".part",
+            ]
+            while not stop_poll.wait(0.5):
+                check = dest
+                for candidate in incomplete_candidates:
+                    if os.path.isfile(candidate):
+                        check = candidate
+                        break
+
                 if os.path.isfile(check):
                     done = os.path.getsize(check)
                     if total_bytes:
                         frac = min(done / total_bytes, 0.99)
-                        mb_d = done        / 1_048_576
-                        mb_t = total_bytes / 1_048_576
+                        mb_done = done / 1_048_576
+                        mb_total = total_bytes / 1_048_576
                         if on_progress:
-                            on_progress(frac, f"{mb_d:.0f} / {mb_t:.0f} MB")
-                    else:
-                        mb_d = done / 1_048_576
-                        if on_progress:
-                            on_progress(0.0, f"{mb_d:.0f} MB downloaded...")
+                            on_progress(frac, f"{mb_done:.0f} / {mb_total:.0f} MB")
+                    elif on_progress:
+                        mb_done = done / 1_048_576
+                        on_progress(0.0, f"{mb_done:.0f} MB downloaded...")
 
         poll_thread = threading.Thread(target=_poller, daemon=True)
         poll_thread.start()
 
         try:
-            # Build kwargs carefully — older HF versions don't have some args
             kwargs: dict = {
-                "repo_id":  repo_id,
+                "repo_id": repo_id,
                 "filename": filename,
+                "revision": revision,
                 "local_dir": _models_dir(),
             }
-            # local_dir_use_symlinks added in ~0.17; silently skip if absent
+
             try:
                 import inspect
                 from huggingface_hub import hf_hub_download as _hfd
+
                 if "local_dir_use_symlinks" in inspect.signature(_hfd).parameters:
                     kwargs["local_dir_use_symlinks"] = False
             except Exception:
@@ -196,7 +251,7 @@ def download_model(
 
             cached = hf_hub_download(**kwargs)
 
-            _stop_poll.set()
+            stop_poll.set()
             poll_thread.join(timeout=1)
 
             if os.path.abspath(cached) != os.path.abspath(dest):
@@ -207,179 +262,102 @@ def download_model(
             if on_done:
                 on_done(True, dest)
 
-        except Exception as e:
-            _stop_poll.set()
+        except Exception as exc:
+            stop_poll.set()
+            poll_thread.join(timeout=1)
             if on_done:
-                on_done(False, f"Download failed: {e}")
+                on_done(False, f"Download failed: {exc}")
 
     threading.Thread(target=_run, daemon=True).start()
 
 
-def _extract_model_from_apk(
-    asset_name:  str,
-    dest_path:   str,
-    on_progress: Optional[Callable[[float, str], None]] = None,
-    on_done:     Optional[Callable[[bool, str], None]]  = None,
-) -> None:
-    """
-    Internal helper: extract any APK asset entry to an arbitrary dest_path.
-    Runs in a background thread.
-    """
-    def _run():
-        try:
-            from android import mActivity  # type: ignore
-        except ImportError:
-            if on_done:
-                on_done(False, "Not on Android — skipping asset extraction.")
-            return
-
-        try:
-            import zipfile as _zf
-
-            apk_path = str(mActivity.getPackageCodePath())
-            entry  = f"assets/{asset_name}"
-            label  = os.path.basename(asset_name)
-
-            with _zf.ZipFile(apk_path, "r") as zf:
-                info  = zf.getinfo(entry)
-                total = info.file_size
-                print(f"[downloader] Extracting {entry}  ({total//1_048_576} MB) → {dest_path}")
-
-                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-                copied = 0
-                if on_progress:
-                    on_progress(0.0, f"Extracting {label}…")
-
-                with zf.open(info) as zin, open(dest_path, "wb") as f:
-                    while True:
-                        chunk = zin.read(512 * 1024)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        copied += len(chunk)
-                        if on_progress and total > 0:
-                            frac = min(copied / total, 0.99)
-                            mb_d = copied // 1_048_576
-                            mb_t = total  // 1_048_576
-                            on_progress(frac, f"Extracting {label}… {mb_d} / {mb_t} MB")
-
-            if on_progress:
-                on_progress(1.0, f"Extracted {label}.")
-            if on_done:
-                on_done(True, dest_path)
-
-        except Exception as e:
-            if on_done:
-                on_done(False, str(e))
-
-    threading.Thread(target=_run, daemon=True).start()
-
-
-def extract_from_apk_asset(
-    asset_name:  str = "models/model.gguf",
-    on_progress: Optional[Callable[[float, str], None]] = None,
-    on_done:     Optional[Callable[[bool, str], None]]  = None,
-) -> None:
-    """Backward-compatible wrapper: extracts Qwen model from APK assets."""
-    _extract_model_from_apk(
-        asset_name  = asset_name,
-        dest_path   = model_dest_path(QWEN_MODEL["filename"]),
-        on_progress = on_progress,
-        on_done     = on_done,
-    )
-
-
+# ------------------------------------------------------------------ #
+#  One-time bootstrap                                                #
+# ------------------------------------------------------------------ #
 
 def auto_download_default(
     on_progress: Optional[Callable[[float, str], None]] = None,
-    on_done:     Optional[Callable[[bool, str], None]]  = None,
+    on_done: Optional[Callable[[bool, str], None]] = None,
 ) -> None:
     """
-    Ensure both the Qwen (Generation) and Nomic (Embedding) models are ready.
-    Logic priority:
-      1. Already present in models/ dir
-      2. Bundled inside the APK (Android) -> Extract Qwen
-      3. Bundled in project dev folder
-      4. Download from HuggingFace
+    Ensure both Qwen + Nomic are present for offline use.
+
+    Rules:
+      1) If bootstrap state matches current manifest and files are valid -> skip network
+      2) If manifest changed, re-sync all models from Hugging Face
+      3) Otherwise download any missing models from Hugging Face
+      4) Save bootstrap_state.json when complete
     """
-    qwen_dest  = model_dest_path(QWEN_MODEL["filename"])
-    nomic_dest = model_dest_path(NOMIC_MODEL["filename"])
 
-    def _prepare_nomic():
-        # Step 2: Ensure Nomic embedding model is present
-        if os.path.isfile(nomic_dest) and os.path.getsize(nomic_dest) > 10 * 1024 * 1024:
-            if on_progress: on_progress(1.0, "All models ready.")
-            if on_done: on_done(True, "All models ready.")
+    total = len(MOBILE_MODELS)
+
+    def _emit(index: int, frac: float, text: str) -> None:
+        if not on_progress:
+            return
+        frac = max(0.0, min(1.0, frac))
+        overall = (index + frac) / total
+        on_progress(overall, text)
+
+    if _is_bootstrap_complete():
+        if on_progress:
+            on_progress(1.0, "Offline ready. Using cached AI models.")
+        if on_done:
+            on_done(True, "All models ready: cached and offline.")
+        return
+
+    previous_state = _load_bootstrap_state()
+    manifest_changed = bool(previous_state) and previous_state.get("manifest_hash") != _manifest_hash()
+
+    def _ensure_model(index: int) -> None:
+        if index >= total:
+            try:
+                _save_bootstrap_state()
+            except Exception as exc:
+                if on_done:
+                    on_done(False, f"Failed to write bootstrap state: {exc}")
+                return
+
+            if on_progress:
+                on_progress(1.0, "Offline ready. AI models cached on device.")
+            if on_done:
+                on_done(True, "All models ready: Qwen + Nomic")
             return
 
-        # On Android, try extracting from APK first
-        if os.environ.get("ANDROID_PRIVATE"):
-            def _after_nomic_extract(ok, path_or_err):
-                if ok:
-                    if on_progress: on_progress(1.0, "All models ready.")
-                    if on_done: on_done(True, "All models ready.")
-                else:
-                    # Fallback: download from HuggingFace
-                    download_model(
-                        repo_id     = NOMIC_MODEL["repo_id"],
-                        filename    = NOMIC_MODEL["filename"],
-                        on_progress = on_progress,
-                        on_done     = on_done,
-                    )
-            _extract_model_from_apk(
-                asset_name   = "models/nomic.gguf",
-                dest_path    = nomic_dest,
-                on_progress  = on_progress,
-                on_done      = _after_nomic_extract,
-            )
+        meta = MOBILE_MODELS[index]
+        label = meta["label"].split("(")[0].strip()
+
+        if _is_model_file_ready(meta) and not manifest_changed:
+            _emit(index, 1.0, f"{label} already cached.")
+            _ensure_model(index + 1)
             return
 
-        # Desktop / no APK: download directly from HF
+        _emit(index, 0.0, f"Downloading {label} (first launch only)...")
+
+        def _on_progress(frac: float, text: str) -> None:
+            _emit(index, frac, f"{label}: {text}")
+
+        def _on_done(success: bool, message: str) -> None:
+            if not success:
+                if on_done:
+                    on_done(False, message)
+                return
+
+            if not _is_model_file_ready(meta):
+                if on_done:
+                    on_done(False, f"Download incomplete: {meta['filename']}")
+                return
+
+            _ensure_model(index + 1)
+
         download_model(
-            repo_id     = NOMIC_MODEL["repo_id"],
-            filename    = NOMIC_MODEL["filename"],
-            on_progress = on_progress,
-            on_done     = on_done
+            repo_id=meta["repo_id"],
+            filename=meta["filename"],
+            revision=meta.get("revision", "main"),
+            min_bytes=int(meta.get("min_bytes", 1)),
+            force_download=manifest_changed,
+            on_progress=_on_progress,
+            on_done=_on_done,
         )
 
-    def _prepare_qwen():
-        # Step 1: Ensure Qwen generation model is present
-        
-        # 1. Already on disk
-        if os.path.isfile(qwen_dest) and os.path.getsize(qwen_dest) > 50 * 1024 * 1024:
-            _prepare_nomic()
-            return
+    _ensure_model(0)
 
-        # 2. Extract from APK asset (Android only)
-        if os.environ.get("ANDROID_PRIVATE"):
-            def _after_extract(ok, path_or_err):
-                if ok:
-                    _prepare_nomic()
-                else:
-                    # Fallback to HF download for Qwen
-                    download_model(
-                        repo_id     = QWEN_MODEL["repo_id"],
-                        filename    = QWEN_MODEL["filename"],
-                        on_progress = on_progress,
-                        on_done     = lambda ok, msg: _prepare_nomic() if ok else on_done(False, msg),
-                    )
-
-            extract_from_apk_asset("models/model.gguf", on_progress, _after_extract)
-            return
-
-        # 3. Bundled with the project (desktop dev)
-        bundled = _bundled_model_path(QWEN_MODEL["filename"])
-        if bundled and bundled != qwen_dest:
-            _prepare_nomic()
-            return
-
-        # 4. Download from Hugging Face
-        download_model(
-            repo_id     = QWEN_MODEL["repo_id"],
-            filename    = QWEN_MODEL["filename"],
-            on_progress = on_progress,
-            on_done     = lambda ok, msg: _prepare_nomic() if ok else on_done(False, msg),
-        )
-
-    # Start the chain
-    _prepare_qwen()

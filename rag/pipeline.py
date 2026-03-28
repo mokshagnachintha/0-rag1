@@ -1,20 +1,24 @@
 """
-pipeline.py — Orchestrates the full RAG pipeline:
-    ingest document → retrieve context → generate answer
+pipeline.py - Orchestrates document ingest, retrieval and generation.
 """
 from __future__ import annotations
 
-import os
 import threading
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
-from .db       import init_db, insert_document, update_doc_chunk_count, get_conn
-from .chunker  import process_document
-from .db       import insert_chunks
+from .chunker import process_document
+from .db import (
+    get_conn,
+    init_db,
+    insert_chunks,
+    insert_document,
+    update_doc_chunk_count,
+)
+from .downloader import NOMIC_MODEL, QWEN_MODEL, auto_download_default, model_dest_path
+from .llm import build_direct_prompt, build_rag_prompt, list_available_models, llm
 from .retriever import HybridRetriever
-from .llm      import llm, build_rag_prompt, build_direct_prompt, list_available_models
-from .downloader import auto_download_default, model_dest_path, QWEN_MODEL, NOMIC_MODEL
 
 
 # Module-level retriever (shared across the whole app)
@@ -22,88 +26,99 @@ retriever = HybridRetriever(alpha=0.5)
 
 
 # ------------------------------------------------------------------ #
-#  Initialisation                                                      #
+#  Initialisation                                                    #
 # ------------------------------------------------------------------ #
 
-# Registered callbacks for auto-download progress UI
 _auto_dl_progress_cb: Optional[Callable[[float, str], None]] = None
-_auto_dl_done_cb:     Optional[Callable[[bool, str], None]]  = None
+_auto_dl_done_cb: Optional[Callable[[bool, str], None]] = None
+
+
+def _service_qwen_ready(wait_seconds: float = 0.0) -> bool:
+    import urllib.request
+
+    attempts = max(1, int(wait_seconds / 0.5))
+    for i in range(attempts):
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:8082/health", timeout=1) as r:
+                if r.status == 200:
+                    return True
+        except Exception:
+            pass
+        if i < attempts - 1:
+            time.sleep(0.5)
+    return False
 
 
 def register_auto_download_callbacks(
     on_progress: Optional[Callable[[float, str], None]],
-    on_done:     Optional[Callable[[bool, str], None]],
+    on_done: Optional[Callable[[bool, str], None]],
 ) -> None:
     """
-    Call from UI to receive auto-download / model-load progress events.
-    If the model is already loaded by the time this is called, on_done
-    fires immediately so the UI never gets stuck in the loading state.
+    Register UI callbacks for model bootstrap progress.
+    If the model is already ready, on_done fires immediately.
     """
     global _auto_dl_progress_cb, _auto_dl_done_cb
     _auto_dl_progress_cb = on_progress
-    _auto_dl_done_cb     = on_done
+    _auto_dl_done_cb = on_done
 
-    # Race guard 1: LLM already loaded in this process
     if on_done and llm.is_loaded():
         on_done(True, "Models ready: Qwen + Nomic")
         return
 
-    # Race guard 2: foreground service already has llama-server running —
-    # skip extraction/download and connect immediately.
-    import urllib.request
-    try:
-        with urllib.request.urlopen(
-            "http://127.0.0.1:8082/health", timeout=1
-        ) as r:
-            if r.status == 200:
-                llm._backend = "llama_server"  # mark as connected
-                if on_done:
-                    on_done(True, "Models ready: Qwen + Nomic (service)")
-                return
-    except Exception:
-        pass
+    if _service_qwen_ready(wait_seconds=0.0):
+        llm._backend = "llama_server"
+        llm._model_path = model_dest_path(QWEN_MODEL["filename"])
+        if on_done:
+            on_done(True, "Models ready: Qwen + Nomic (service)")
 
 
 def init() -> None:
-    """Call once at app start: set up DB, retriever, then auto-download default model."""
+    """Call once at app start: set up DB + retriever + model bootstrap."""
     init_db()
     retriever.reload()
     _start_auto_download()
 
 
 def _start_auto_download() -> None:
-    """Ensure Qwen + Nomic are on disk, then load Qwen and start Nomic server."""
+    """Ensure Qwen + Nomic are on disk, then load/connect Qwen."""
+
     def _progress(frac: float, text: str):
         if _auto_dl_progress_cb:
             _auto_dl_progress_cb(frac, text)
 
-    def _done(success: bool, _msg: str):
-        """Called when BOTH models are ready on disk."""
-        qwen_path  = model_dest_path(QWEN_MODEL["filename"])
-        nomic_path = model_dest_path(NOMIC_MODEL["filename"])
+    def _done(success: bool, message: str):
+        qwen_path = model_dest_path(QWEN_MODEL["filename"])
 
         if not success:
             if _auto_dl_done_cb:
-                _auto_dl_done_cb(False, _msg)
+                _auto_dl_done_cb(False, message)
             return
 
-        # ── Load Qwen for generation only — Nomic starts lazily on first PDF ─ #
-        if not llm.is_loaded():
-            load_model(
-                qwen_path,
-                on_progress=_progress,
-                on_done=lambda ok, msg: (
-                    _auto_dl_done_cb(ok, msg) if _auto_dl_done_cb else None
-                ),
-            )
-        elif _auto_dl_done_cb:
-            _auto_dl_done_cb(True, "Models ready: Qwen + Nomic")
+        if llm.is_loaded():
+            if _auto_dl_done_cb:
+                _auto_dl_done_cb(True, "Models ready: Qwen + Nomic")
+            return
+
+        # Prefer the service-owned Qwen server if it is up.
+        if _service_qwen_ready(wait_seconds=12.0):
+            llm._backend = "llama_server"
+            llm._model_path = qwen_path
+            if _auto_dl_done_cb:
+                _auto_dl_done_cb(True, "Models ready: Qwen + Nomic")
+            return
+
+        # Fallback: load/connect from app process.
+        load_model(
+            qwen_path,
+            on_progress=_progress,
+            on_done=lambda ok, msg: (_auto_dl_done_cb(ok, msg) if _auto_dl_done_cb else None),
+        )
 
     auto_download_default(on_progress=_progress, on_done=_done)
 
 
 # ------------------------------------------------------------------ #
-#  Document ingestion                                                  #
+#  Document ingestion                                                #
 # ------------------------------------------------------------------ #
 
 def ingest_document(
@@ -112,18 +127,18 @@ def ingest_document(
 ) -> None:
     """
     Ingest a .txt or .pdf file in a background thread.
-    Starts the Nomic embedding server on first call (lazy start to save RAM).
-    on_done(success: bool, message: str) is called on completion.
+    Starts Nomic server lazily on first call.
     """
+
     def _run():
         try:
-            # Lazy-start Nomic server — only needed when indexing documents.
-            # Starting it at app launch wastes ~300 MB RAM on devices that
-            # never upload a PDF.
+            # Lazy-start Nomic server only when indexing is needed.
             import os
+
             nomic_path = model_dest_path(NOMIC_MODEL["filename"])
             if os.path.isfile(nomic_path):
-                from .llm import start_nomic_server, _probe_port, _NOMIC_PORT
+                from .llm import _NOMIC_PORT, _probe_port, start_nomic_server
+
                 if not _probe_port(_NOMIC_PORT):
                     start_nomic_server(nomic_path)
 
@@ -134,17 +149,19 @@ def ingest_document(
             update_doc_chunk_count(doc_id, len(chunks))
             retriever.reload()
             if on_done:
-                on_done(True, f"Ingested '{name}' \u2014 {len(chunks)} chunks")
-        except Exception as e:
-            import traceback; traceback.print_exc()
+                on_done(True, f"Ingested '{name}' - {len(chunks)} chunks")
+        except Exception as exc:
+            import traceback
+
+            traceback.print_exc()
             if on_done:
-                on_done(False, f"Error: {e}")
+                on_done(False, f"Error: {exc}")
 
     threading.Thread(target=_run, daemon=True).start()
 
 
 # ------------------------------------------------------------------ #
-#  Model management                                                    #
+#  Model management                                                  #
 # ------------------------------------------------------------------ #
 
 def load_model(
@@ -152,15 +169,16 @@ def load_model(
     on_progress: Optional[Callable[[float, str], None]] = None,
     on_done: Optional[Callable[[bool, str], None]] = None,
 ) -> None:
-    """Load a GGUF model in a background thread, with live progress callbacks."""
+    """Load a GGUF model in a background thread."""
+
     def _run():
         try:
             llm.load(model_path, on_progress=on_progress)
             if on_done:
                 on_done(True, f"Model loaded: {Path(model_path).name}")
-        except Exception as e:
+        except Exception as exc:
             if on_done:
-                on_done(False, f"Failed to load model: {e}")
+                on_done(False, f"Failed to load model: {exc}")
 
     threading.Thread(target=_run, daemon=True).start()
 
@@ -172,7 +190,6 @@ def get_available_models() -> list[str]:
 def clear_all_documents() -> None:
     """Delete all ingested documents + chunks and reset the in-memory retriever."""
     with get_conn() as conn:
-        # Delete chunks explicitly first (in case foreign_keys was OFF in old DBs)
         conn.execute("DELETE FROM chunks")
         conn.execute("DELETE FROM documents")
     retriever.reload()
@@ -183,7 +200,7 @@ def is_model_loaded() -> bool:
 
 
 # ------------------------------------------------------------------ #
-#  Query                                                               #
+#  Query                                                             #
 # ------------------------------------------------------------------ #
 
 def chat_direct(
@@ -194,10 +211,11 @@ def chat_direct(
     on_done: Optional[Callable[[bool, str], None]] = None,
 ) -> None:
     """
-    Chat directly with the LLM — no document retrieval.
+    Chat directly with the LLM (no retrieval).
     history: last 3 verbatim (user, assistant) turns.
     summary: compressed plain-text summary of older turns.
     """
+
     def _run():
         try:
             if not llm.is_loaded():
@@ -206,14 +224,13 @@ def chat_direct(
                 return
 
             prompt = build_direct_prompt(question, history, summary)
-            answer = llm.generate(prompt, stream_cb=stream_cb)
-            answer = answer.strip()
+            answer = llm.generate(prompt, stream_cb=stream_cb).strip()
             if on_done:
                 on_done(True, answer)
 
-        except Exception as e:
+        except Exception as exc:
             if on_done:
-                on_done(False, f"Error during inference: {e}")
+                on_done(False, f"Error during inference: {exc}")
 
     threading.Thread(target=_run, daemon=True).start()
 
@@ -225,10 +242,9 @@ def ask(
 ) -> None:
     """
     Run a RAG query in a background thread.
-    Retrieves top-2 chunks (sized to fit ctx=768 budget).
-    stream_cb: called with each new LLM token (for streaming UI)
-    on_done  : called with (success, full_answer_or_error)
+    Retrieves top-2 chunks to fit mobile context budget.
     """
+
     def _run():
         try:
             if retriever.is_empty():
@@ -249,15 +265,14 @@ def ask(
 
             context_chunks = [text for text, _ in results]
             prompt = build_rag_prompt(context_chunks, question)
-
-            answer = llm.generate(prompt, stream_cb=stream_cb)
-            answer = answer.strip()
+            answer = llm.generate(prompt, stream_cb=stream_cb).strip()
 
             if on_done:
                 on_done(True, answer)
 
-        except Exception as e:
+        except Exception as exc:
             if on_done:
-                on_done(False, f"Error during inference: {e}")
+                on_done(False, f"Error during inference: {exc}")
 
     threading.Thread(target=_run, daemon=True).start()
+

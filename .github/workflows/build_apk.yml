@@ -1,8 +1,10 @@
-name: Build Android APK
+﻿name: Build Android APK
+# Produces a slim APK with no bundled models.
+# Qwen + Nomic are downloaded once on first launch.
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master,model_host ]
   workflow_dispatch:
 
 jobs:
@@ -11,24 +13,20 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      # ── 1. Checkout ───────────────────────────────────────── #
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. Set up Python ─────────────────────────────────── #
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # ── 3. Set up Java 17 (required by p4a's AGP 8.x) ────────────── #
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
-      # ── 4. System packages ────────────────────────────────── #
       - name: Install system packages
         run: |
           sudo apt-get update -qq
@@ -39,13 +37,11 @@ jobs:
             libtinfo5 cmake libffi-dev libssl-dev \
             wget lld clang
 
-      # ── 5. Install Buildozer + python-for-android ────────── #
       - name: Install Buildozer
         run: |
           pip install --upgrade pip setuptools wheel cython
           pip install buildozer python-for-android
 
-      # ── 6. Cache Android SDK/NDK and p4a builds ──────────── #
       - name: Cache Buildozer global dir
         uses: actions/cache@v4
         with:
@@ -60,7 +56,6 @@ jobs:
           key: buildozer-project-${{ runner.os }}-${{ github.repository_id }}-${{ hashFiles('buildozer.spec','requirements.txt') }}
           restore-keys: buildozer-project-${{ runner.os }}-${{ github.repository_id }}-
 
-      # ── 7. Clone llama.cpp source (compiled after NDK is ready) ─────── #
       - name: Clone llama.cpp source
         run: |
           # Clone to /tmp so it is NOT inside the workspace (source.dir=.)
@@ -70,44 +65,27 @@ jobs:
           git clone --depth 1 https://github.com/ggml-org/llama.cpp.git /tmp/llama_cpp_src
           echo "llama.cpp cloned: $(ls /tmp/llama_cpp_src)"
 
-      # ── 8. Build APK ─────────────────────────────────────────────── #
       - name: Build Android debug APK
         env:
-          # Give the Gradle daemon enough heap for asset processing
           GRADLE_OPTS: "-Xmx4g -XX:MaxMetaspaceSize=512m"
         run: |
-          # Confirm Java version
           java -version
-          # Unset PYTHONHOME/PYTHONPATH so host Python finds its own stdlib
-          # (p4a cross-compilation can corrupt these, causing 'No module named encodings')
           unset PYTHONHOME PYTHONPATH
-          # Delete stale hostpython3 build — it embeds absolute repo paths that
-          # break when cache is restored from a different repo clone (e.g. offline-rag-android -> o-rag)
           rm -rf .buildozer/android/platform/build-arm64-v8a/build/other_builds/hostpython3 2>/dev/null || true
           rm -rf ~/.buildozer/android/platform/build-arm64-v8a/build/other_builds/hostpython3 2>/dev/null || true
-          # Delete ALL stale dists (handles dist_name changes, e.g. offlinerag -> orag)
           rm -rf .buildozer/android/platform/build-arm64-v8a/dists/
           rm -rf ~/.buildozer/android/platform/build-arm64-v8a/dists/ 2>/dev/null || true
-          # Always wipe the app source dir so buildozer re-copies fresh files
-          # (stale cache causes "No main.py found" failure in p4a SDL2 bootstrap)
           rm -rf .buildozer/android/app 2>/dev/null || true
-          # Pin Cython to a version compatible with pyjnius (kivy dep)
           pip install "cython==0.29.37" --quiet
-          # Ensure ~/.android exists (needed by keytool / sdkmanager)
           mkdir -p ~/.android && touch ~/.android/repositories.cfg
-          # Pipe yes to answer any SDK license prompts interactively
-          # PIPESTATUS: 0=yes, 1=buildozer, 2=tee
           yes 2>/dev/null | buildozer android debug 2>&1 | tee build.log
           exit ${PIPESTATUS[1]}
 
-      # ── 9. Compile llama-server + bundle model + patch APK ── #
-      - name: Bundle server binary and GGUF model into APK
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Bundle server binary into APK (no models)
         run: |
           set -e
 
-          # ── 9a. Compile llama-server for Android ARM64 ───────────────
+          # Step 9a: Compile llama-server for Android ARM64
           echo "=== Step 9a: Compiling llama-server for Android ARM64 ==="
 
           NDK_HOME=$(find $HOME/.buildozer/android/platform -maxdepth 1 \
@@ -150,6 +128,7 @@ jobs:
           fi
           cp "$BIN" llama-server-arm64
           chmod 755 llama-server-arm64
+
           # Strip debug symbols to shrink the binary (~15-25 MB saved)
           STRIP="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
           if [ -f "$STRIP" ]; then
@@ -160,46 +139,21 @@ jobs:
           fi
           echo "SUCCESS: $(du -sh llama-server-arm64)"
 
-          # ── 9b. Download GGUF models ──────────────────────────────────
-          echo "=== Step 9b: Downloading Qwen 2.5 1.5B Instruct Q4_K_M GGUF model ==="
-          pip install huggingface-hub --quiet
+          # Step 9b: Patch APK - inject binary only, NO models
+          echo "=== Step 9b: Patching APK (binary only) ==="
           python3 - <<'PYEOF'
+          import glob
           import os
-          from huggingface_hub import hf_hub_download
+          import zipfile
 
-          # Qwen generation model (~1.1 GB)
-          path = hf_hub_download(
-              repo_id="Qwen/Qwen2.5-1.5B-Instruct-GGUF",
-              filename="qwen2.5-1.5b-instruct-q4_k_m.gguf",
-              local_dir="model_tmp",
-              local_dir_use_symlinks=False,
-          )
-          print(f"Qwen model: {path} ({os.path.getsize(path)//1_048_576} MB)")
-
-          # Nomic embedding model (~80 MB)
-          nomic = hf_hub_download(
-              repo_id="nomic-ai/nomic-embed-text-v1.5-GGUF",
-              filename="nomic-embed-text-v1.5.Q4_K_M.gguf",
-              local_dir="model_tmp",
-              local_dir_use_symlinks=False,
-          )
-          print(f"Nomic model: {nomic} ({os.path.getsize(nomic)//1_048_576} MB)")
-          PYEOF
-
-          # ── 9c. Patch APK — inject model + binary in one pass ────────
-          echo "=== Step 9c: Patching APK ==="
-          python3 - <<'PYEOF'
-          import zipfile, glob, os
-
-          apk        = glob.glob("bin/*.apk")[0]
-          model      = glob.glob("model_tmp/qwen*.gguf")[0]   # must be Qwen, not nomic
-          srv        = "llama-server-arm64"
-          tmp   = apk + ".tmp"
-          CHUNK = 4 * 1024 * 1024
+          apk = glob.glob("bin/*.apk")[0]
+          srv = "llama-server-arm64"
+          tmp = apk + ".tmp"
+          chunk_size = 4 * 1024 * 1024
 
           print(f"APK:    {apk}  ({os.path.getsize(apk)//1_048_576} MB)")
-          print(f"Model:  {model}  ({os.path.getsize(model)//1_048_576} MB)")
           print(f"Binary: {srv}  ({os.path.getsize(srv)//1024} KB)")
+          print("NOTE: No models bundled. App downloads models on first launch.")
 
           with zipfile.ZipFile(apk, "r") as src, \
                zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as dst:
@@ -209,55 +163,32 @@ jobs:
                       continue
                   dst.writestr(item, src.read(item.filename))
 
-              print("Adding Qwen model (ZIP_STORED, uncompressed)...")
-              mi = zipfile.ZipInfo("assets/models/model.gguf")
-              mi.compress_type = zipfile.ZIP_STORED
-              written = 0
-              with open(model, "rb") as mf, dst.open(mi, "w") as zo:
-                  while chunk := mf.read(CHUNK):
-                      zo.write(chunk)
-                      written += len(chunk)
-                      if written % (100*1024*1024) == 0:
-                          print(f"  {written//1_048_576} MB...", flush=True)
-
-              nomic_path = glob.glob("model_tmp/nomic*.gguf")[0]
-              print("Adding Nomic model (ZIP_STORED, uncompressed)...")
-              ni = zipfile.ZipInfo("assets/models/nomic.gguf")
-              ni.compress_type = zipfile.ZIP_STORED
-              written = 0
-              with open(nomic_path, "rb") as nf, dst.open(ni, "w") as zo:
-                  while chunk := nf.read(CHUNK):
-                      zo.write(chunk)
-                      written += len(chunk)
-
-              # Bundle as a native library so Android extracts it at install
-              # time to nativeLibraryDir — the ONLY location SELinux allows
-              # execve() for app processes on Android 10+.
               print("Adding lib/arm64-v8a/libllama_server.so (ZIP_STORED)...")
               bi = zipfile.ZipInfo("lib/arm64-v8a/libllama_server.so")
               bi.compress_type = zipfile.ZIP_STORED
               bi.external_attr = 0o755 << 16
               with open(srv, "rb") as bf, dst.open(bi, "w") as zo:
-                  while chunk := bf.read(CHUNK):
+                  while chunk := bf.read(chunk_size):
                       zo.write(chunk)
 
           os.replace(tmp, apk)
           final_size = os.path.getsize(apk)
           print(f"Done. Final APK: {final_size//1_048_576} MB")
 
-          # Verify both entries are present
-          with zipfile.ZipFile(apk, 'r') as vf:
+          with zipfile.ZipFile(apk, "r") as vf:
               names = vf.namelist()
-              for check in ["lib/arm64-v8a/libllama_server.so",
-                             "assets/models/model.gguf",
-                             "assets/models/nomic.gguf"]:
-                  found = check in names
-                  sz = vf.getinfo(check).file_size // 1024 if found else 0
-                  print(f"  {'OK' if found else 'MISSING'}: {check} ({sz} KB)")
+              check = "lib/arm64-v8a/libllama_server.so"
+              found = check in names
+              sz = vf.getinfo(check).file_size // 1024 if found else 0
+              print(f"  {'OK' if found else 'MISSING'}: {check} ({sz} KB)")
+              has_qwen = "assets/models/model.gguf" in names
+              has_nomic = "assets/models/nomic.gguf" in names
+              print(f"  {'MISSING' if not has_qwen else 'UNEXPECTED'}: assets/models/model.gguf")
+              print(f"  {'MISSING' if not has_nomic else 'UNEXPECTED'}: assets/models/nomic.gguf")
           PYEOF
 
-          # ── 9d. Sign APK ──────────────────────────────────────────────
-          echo "=== Step 9d: Signing APK ==="
+          # Step 9c: Sign APK
+          echo "=== Step 9c: Signing APK ==="
           mkdir -p ~/.android
           keytool -genkey -v \
             -keystore ~/.android/debug.keystore \
@@ -278,7 +209,6 @@ jobs:
           echo "=== FINAL APK ==="
           ls -lh bin/*.apk
 
-      # ── 10. Upload APK as artifact ─────────────────────────────────── #
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
@@ -287,7 +217,6 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-      # ── 11. Upload build log if anything fails ─────────────── #
       - name: Upload build log (on failure)
         if: failure()
         uses: actions/upload-artifact@v4
@@ -295,3 +224,4 @@ jobs:
           name: build-log
           path: build.log
           retention-days: 7
+
