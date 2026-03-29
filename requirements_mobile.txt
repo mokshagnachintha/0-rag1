@@ -1,4 +1,6 @@
-flet>=0.22.0
-llama-cpp-python>=0.2.77
-numpy>=1.26.4
-Flask>=3.0.3
+﻿# Mobile-adjacent Python dependencies used by local simulation tooling.
+kivy>=2.3.0
+pypdf>=4.0.0
+huggingface-hub>=0.23.0
+certifi>=2024.2.2
+plyer>=2.1.0

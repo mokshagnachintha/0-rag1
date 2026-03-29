@@ -4,7 +4,7 @@ from __future__ import annotations
 import warnings
 
 warnings.warn(
-    "`rag.db` is deprecated; use `app.rag.storage`.",
+    "`rag.storage` is deprecated; use `app.rag.storage`.",
     DeprecationWarning,
     stacklevel=2,
 )

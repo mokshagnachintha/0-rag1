@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
+from app.config import NOMIC_SERVER_PORT, QWEN_SERVER_PORT
+
 
 # ------------------------------------------------------------------ #
 #  Android plumbing                                                  #
@@ -168,8 +170,8 @@ def _launch(
 #  Main service loop                                                 #
 # ------------------------------------------------------------------ #
 
-QWEN_PORT = 8082
-NOMIC_PORT = 8083
+QWEN_PORT = QWEN_SERVER_PORT
+NOMIC_PORT = NOMIC_SERVER_PORT
 QWEN_FILE = "qwen2.5-1.5b-instruct-compressed.gguf"
 NOMIC_FILE = "nomic-embed-text-v1.5-compressed.gguf"
 MIN_QWEN_BYTES = 100 * 1024 * 1024

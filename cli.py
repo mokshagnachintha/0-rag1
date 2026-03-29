@@ -4,10 +4,10 @@ from pathlib import Path
 # Insert the current directory (check/) so Python can find the 'rag' module
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from rag.db        import init_db, insert_document, insert_chunks, update_doc_chunk_count
-from rag.chunker   import process_document
-from rag.retriever import HybridRetriever
-from rag.llm       import LlamaCppModel, build_rag_prompt
+from app.rag.storage import init_db, insert_document, insert_chunks, update_doc_chunk_count
+from app.rag.chunker import process_document
+from app.rag.retriever import HybridRetriever
+from app.rag.llm import LlamaCppModel, build_rag_prompt
 
 # Use the models natively downloaded to the workspace
 model_path = "qwen2.5-1.5b-instruct-q4_k_m.gguf"

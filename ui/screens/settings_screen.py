@@ -1,4 +1,4 @@
-"""
+﻿"""
 settings_screen.py - Model management:
    Browse and download Gemma GGUF models straight from Hugging Face
    See download progress live
@@ -106,7 +106,7 @@ class ModelRow(BoxLayout):
         from rag.llm import llm
 
         if is_downloaded(fname):
-            loaded = llm.is_loaded() and Path(llm._model_path or "").name == fname
+            loaded = llm.is_loaded() and Path(llm.model_path or "").name == fname
             if loaded:
                 self._status_lbl.text  = "Loaded "
                 self._status_lbl.color = (0.4, 0.9, 0.4, 1)
@@ -365,7 +365,7 @@ class SettingsScreen(Screen):
     def _update_model_status(self):
         from rag.llm import llm
         if llm.is_loaded():
-            name = Path(llm._model_path or "").name
+            name = Path(llm.model_path or "").name
             self._model_lbl.text  = f"Loaded: {name}"
             self._model_lbl.color = (0.4, 0.9, 0.4, 1)
         else:
@@ -418,3 +418,4 @@ class SettingsScreen(Screen):
         self._update_model_status()
         for row in self._rows:
             row.refresh_state()
+

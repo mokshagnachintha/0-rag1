@@ -10,11 +10,13 @@ Single-screen design: one chat interface.
 # ── Kivy config BEFORE any other kivy import ──────────────────────── #
 import os
 os.environ.setdefault("KIVY_LOG_LEVEL", "warning")
+
+from app.config import ENV_FORCE_BOOTSTRAP_DOWNLOAD
 # Desktop development helper:
 # force model bootstrap download flow on every local run.
 # (Android builds are unaffected.)
 if not os.environ.get("ANDROID_PRIVATE"):
-    os.environ.setdefault("ORAG_FORCE_BOOTSTRAP_DOWNLOAD", "1")
+    os.environ.setdefault(ENV_FORCE_BOOTSTRAP_DOWNLOAD, "1")
 
 from kivy.config import Config
 Config.set("kivy", "window_icon", "assets/icon.png")
@@ -35,8 +37,8 @@ import threading
 import traceback
 sys.path.insert(0, os.path.dirname(__file__))
 
-from ui.screens.chat_screen import ChatScreen
-from rag.pipeline           import init
+from app.ui.chat.chat_screen import ChatScreen
+from app.rag.pipeline import init
 
 
 def _global_exception_handler(exc_type, exc_value, exc_tb):
@@ -53,19 +55,6 @@ def _global_exception_handler(exc_type, exc_value, exc_tb):
             pass
 
 sys.excepthook = _global_exception_handler
-
-
-def _start_android_service():
-    """Start the foreground service that owns llama-server processes.
-    No-op on desktop (ImportError is silently ignored).
-    """
-    try:
-        from android import AndroidService  # type: ignore
-        svc = AndroidService("O-RAG AI Engine", "AI engine running in background")
-        svc.start("start")
-        print("[main] Android foreground service started.")
-    except Exception as exc:
-        print(f"[main] Service start skipped: {exc}")
 
 
 class RAGApp(App):
