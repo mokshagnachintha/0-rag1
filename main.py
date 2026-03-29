@@ -72,7 +72,7 @@ class AppShell(BoxLayout):
             text="[b]O-RAG[/b]",
             markup=True,
             color=Theme.TEXT,
-            font_size=TypeScale.LG,
+            font_size=TypeScale.MD,
             halign="left",
             valign="middle",
             size_hint=(1, None),
@@ -82,6 +82,7 @@ class AppShell(BoxLayout):
 
         self._segmented = SurfaceCard(
             color=Theme.SURFACE_ALT,
+            radius=self._metrics.section_radius,
             orientation="horizontal",
             size_hint=(1, None),
         )
@@ -92,6 +93,7 @@ class AppShell(BoxLayout):
                 bg_color=Theme.SURFACE_ALT,
                 size_hint=(1, None),
                 font_size=TypeScale.SM,
+                radius=self._metrics.tab_radius,
             )
             btn.bind(on_release=lambda _, target=name: self.switch_tab(target))
             self._segmented.add_widget(btn)
@@ -112,19 +114,20 @@ class AppShell(BoxLayout):
     def _apply_metrics(self, metrics):
         self._metrics = metrics
         self._top.height = metrics.shell_height
-        self._top.padding = [metrics.screen_pad_h, metrics.gap_sm, metrics.screen_pad_h, metrics.gap_sm]
-        self._top.spacing = metrics.gap_sm
+        self._top.padding = [metrics.screen_pad_h, metrics.gap_xs, metrics.screen_pad_h, metrics.gap_xs]
+        self._top.spacing = metrics.gap_xs
 
         self._title.height = metrics.shell_title_h
-        self._title.font_size = TypeScale.LG if metrics.size_class == "medium" else TypeScale.MD
+        self._title.font_size = TypeScale.LG if metrics.size_class == "expanded" else TypeScale.MD
 
         self._segmented.height = metrics.shell_tabs_h
-        self._segmented.padding = [metrics.gap_sm, metrics.gap_sm, metrics.gap_sm, metrics.gap_sm]
-        self._segmented.spacing = metrics.gap_sm
+        self._segmented.padding = [metrics.gap_xs, metrics.gap_xs, metrics.gap_xs, metrics.gap_xs]
+        self._segmented.spacing = metrics.gap_xs
         self._segmented.set_color(Theme.SURFACE_ALT)
 
         for btn in self._tabs.values():
             btn.height = metrics.shell_tab_btn_h
+            btn.font_size = TypeScale.SM * metrics.font_scale
 
         for screen in self._screens.screens:
             callback = getattr(screen, "on_responsive_metrics", None)

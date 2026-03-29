@@ -23,11 +23,11 @@ class Theme:
 
 
 class Radius:
-    XS = dp(6)
-    SM = dp(8)
-    MD = dp(10)
-    LG = dp(12)
-    PILL = dp(14)
+    XS = dp(5)
+    SM = dp(7)
+    MD = dp(9)
+    LG = dp(11)
+    PILL = dp(11)
 
 
 class Space:
@@ -45,4 +45,4 @@ class TypeScale:
     XL = sp(18)
 
 
-MIN_TOUCH = dp(44)
+MIN_TOUCH = dp(48)

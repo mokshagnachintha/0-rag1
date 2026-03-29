@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.ui.chat.controller import ChatController
-from app.ui.responsive import current_metrics
+from app.ui.responsive import current_metrics, is_split_class
 from app.ui.theme import Theme, TypeScale
 from app.ui.widgets import PillButton, SurfaceCard, bind_label_size, paint_background
 
@@ -63,12 +63,12 @@ class DocumentRow(SurfaceCard):
 
     def apply_metrics(self):
         m = self._metrics_getter()
-        self.height = dp(64)
+        self.height = m.control_h + m.gap_md + m.gap_sm
         self.padding = [m.gap_md, m.gap_sm, m.gap_md, m.gap_sm]
         self.spacing = m.gap_sm
         self._name.height = dp(22)
         self._meta.height = dp(18)
-        self._delete_btn.size = (dp(72), dp(30))
+        self._delete_btn.size = (dp(76), m.control_h)
 
 
 class DocsScreen(Screen):
@@ -105,13 +105,13 @@ class DocsScreen(Screen):
 
     def _build_ui(self):
         m = self._metrics
-        root = BoxLayout(orientation="horizontal" if m.size_class == "medium" else "vertical")
+        root = BoxLayout(orientation="horizontal" if is_split_class(m.size_class) else "vertical")
         paint_background(root, Theme.BG)
         root.padding = [m.screen_pad_h, m.screen_pad_v, m.screen_pad_h, m.screen_pad_v]
         root.spacing = m.gap_md
         self._root = root
 
-        content_col = BoxLayout(orientation="vertical", spacing=m.gap_sm, size_hint=(0.66, 1) if m.size_class == "medium" else (1, 1))
+        content_col = BoxLayout(orientation="vertical", spacing=m.gap_sm, size_hint=(m.split_primary_ratio, 1) if is_split_class(m.size_class) else (1, 1))
 
         self._summary = SurfaceCard(
             color=Theme.SURFACE,
@@ -165,9 +165,9 @@ class DocsScreen(Screen):
 
         root.add_widget(content_col)
 
-        self._actions = self._build_actions_panel(size_hint=(0.34, 1) if m.size_class == "medium" else (1, None))
-        if m.size_class == "compact":
-            self._actions.height = dp(120)
+        self._actions = self._build_actions_panel(
+            size_hint=(1 - m.split_primary_ratio, 1) if is_split_class(m.size_class) else (1, None),
+        )
         root.add_widget(self._actions)
 
         self.add_widget(root)
@@ -186,19 +186,19 @@ class DocsScreen(Screen):
             text="Browse PDF / TXT",
             bg_color=Theme.PRIMARY,
             size_hint=(1, None),
-            height=dp(38),
+            height=m.control_h,
             font_size=TypeScale.SM,
             radius=m.control_radius,
         )
         browse_btn.bind(on_release=self._on_browse)
         action_card.add_widget(browse_btn)
 
-        manual_row = BoxLayout(orientation="horizontal", spacing=m.gap_sm, size_hint=(1, None), height=dp(38))
+        manual_row = BoxLayout(orientation="horizontal", spacing=m.gap_sm, size_hint=(1, None), height=m.control_h)
         shell = SurfaceCard(
             color=Theme.SURFACE_ALT,
             orientation="horizontal",
             size_hint=(1, 1),
-            padding=[m.gap_sm, dp(4), m.gap_sm, dp(4)],
+            padding=[m.gap_sm, m.gap_xs, m.gap_sm, m.gap_xs],
         )
         self._manual_path = TextInput(
             hint_text="Paste full file path...",
@@ -216,7 +216,7 @@ class DocsScreen(Screen):
             text="Add",
             bg_color=Theme.PRIMARY_DARK,
             size_hint=(None, None),
-            size=(dp(64), dp(38)),
+            size=(dp(64), m.control_h),
             font_size=TypeScale.SM,
             radius=m.control_radius,
         )
@@ -230,8 +230,14 @@ class DocsScreen(Screen):
     def _apply_layout_metrics(self):
         m = self._metrics
         self._root.padding = [m.screen_pad_h, m.screen_pad_v, m.screen_pad_h, m.screen_pad_v]
-        self._root.spacing = m.gap_md
+        self._root.spacing = m.gap_sm
         self._summary.height = m.docs_summary_h
+        if is_split_class(m.size_class):
+            self._actions.size_hint = (1 - m.split_primary_ratio, 1)
+            self._actions.height = 0
+        else:
+            self._actions.size_hint = (1, None)
+            self._actions.height = (m.control_h * 2) + (m.gap_sm * 3)
 
     def _set_status(self, text: str, tone="muted"):
         color = Theme.TEXT_MUTED
@@ -262,7 +268,7 @@ class DocsScreen(Screen):
                 color=Theme.SURFACE_ALT,
                 orientation="vertical",
                 size_hint=(1, None),
-                height=dp(72),
+                height=self._metrics.docs_summary_h,
                 padding=[m.gap_md, m.gap_sm, m.gap_md, m.gap_sm],
             )
             lbl = Label(

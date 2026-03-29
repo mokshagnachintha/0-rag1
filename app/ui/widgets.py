@@ -65,7 +65,7 @@ class PillButton(Button):
             background_color=(0, 0, 0, 0),
             **kwargs,
         )
-        self._bg_color_ref, _ = paint_background(self, bg_color, radius=radius or Radius.PILL)
+        self._bg_color_ref, _ = paint_background(self, bg_color, radius=radius or Radius.MD)
 
     def set_bg(self, color) -> None:
         self._bg_color_ref.rgba = color

@@ -273,6 +273,7 @@ class ChatScreen(Screen):
 
         self._last_model_pct = -1
         self._last_model_update_at = 0.0
+        self._engine_error = False
 
         self._build_ui()
         Window.bind(size=self._on_window_size)
@@ -352,7 +353,53 @@ class ChatScreen(Screen):
         self._scroll.add_widget(self._msgs)
         root.add_widget(self._scroll)
 
-        self._add_msg("[b]Welcome to O-RAG.[/b]", role="assistant")
+        self._empty_state = SurfaceCard(color=Theme.SURFACE_ALT, orientation="vertical", size_hint=(1, None), height=dp(88))
+        self._empty_title = Label(
+            text="[b]Welcome to O-RAG[/b]",
+            markup=True,
+            color=Theme.TEXT,
+            halign="left",
+            valign="middle",
+            size_hint=(1, None),
+            height=dp(24),
+            font_size=TypeScale.SM,
+        )
+        bind_label_size(self._empty_title)
+        self._empty_hint = Label(
+            text="Ask in General mode or index docs for Document Q&A.",
+            color=Theme.TEXT_MUTED,
+            halign="left",
+            valign="middle",
+            size_hint=(1, None),
+            height=dp(18),
+            font_size=TypeScale.XS,
+        )
+        bind_label_size(self._empty_hint)
+        self._empty_actions = BoxLayout(orientation="horizontal", size_hint=(1, None), height=dp(28), spacing=dp(6))
+        self._empty_prompt_btn = PillButton(
+            text="Try Prompt",
+            bg_color=Theme.SURFACE,
+            size_hint=(None, None),
+            size=(dp(88), dp(28)),
+            font_size=TypeScale.XS,
+            radius=m.chip_radius,
+        )
+        self._empty_prompt_btn.bind(on_release=lambda *_: self._prefill_prompt())
+        self._empty_docs_btn = PillButton(
+            text="Open Docs",
+            bg_color=Theme.PRIMARY_DARK,
+            size_hint=(None, None),
+            size=(dp(88), dp(28)),
+            font_size=TypeScale.XS,
+            radius=m.chip_radius,
+        )
+        self._empty_docs_btn.bind(on_release=lambda *_: self._go_to_docs())
+        self._empty_actions.add_widget(self._empty_prompt_btn)
+        self._empty_actions.add_widget(self._empty_docs_btn)
+        self._empty_state.add_widget(self._empty_title)
+        self._empty_state.add_widget(self._empty_hint)
+        self._empty_state.add_widget(self._empty_actions)
+        self._msgs.add_widget(self._empty_state)
 
         self._input_zone = SurfaceCard(color=Theme.SURFACE, orientation="vertical", size_hint=(1, None))
 
@@ -387,9 +434,27 @@ class ChatScreen(Screen):
         )
         self._btn_document.bind(on_release=lambda *_: self._set_mode(CHAT_MODE_DOCUMENT))
 
+        self._engine_inline = SurfaceCard(
+            color=Theme.SURFACE_ALT,
+            orientation="horizontal",
+            size_hint=(None, None),
+            radius=m.chip_radius,
+        )
+        self._engine_inline_label = Label(
+            text="ENGINE Starting",
+            color=Theme.WARNING,
+            font_size=TypeScale.XS,
+            halign="center",
+            valign="middle",
+            size_hint=(1, 1),
+        )
+        bind_label_size(self._engine_inline_label)
+        self._engine_inline.add_widget(self._engine_inline_label)
+
         self._composer_meta.add_widget(self._mode_label)
         self._composer_meta.add_widget(self._btn_general)
         self._composer_meta.add_widget(self._btn_document)
+        self._composer_meta.add_widget(self._engine_inline)
         self._input_zone.add_widget(self._composer_meta)
 
         self._input_row = BoxLayout(orientation="horizontal", size_hint=(1, None))
@@ -440,45 +505,54 @@ class ChatScreen(Screen):
     def _apply_responsive_layout(self):
         m = self._metrics
         self._root.padding = [m.screen_pad_h, m.screen_pad_v, m.screen_pad_h, m.screen_pad_v]
-        self._root.spacing = m.gap_md
+        self._root.spacing = m.gap_sm
 
         self._engine_card.padding = [m.gap_md, m.gap_sm, m.gap_md, m.gap_sm]
-        self._engine_card.spacing = dp(2)
+        self._engine_card.spacing = m.gap_xs
         self._engine_state.height = dp(22)
         self._engine_detail.height = dp(18)
 
         self._docs_notice.padding = [m.gap_sm, m.gap_sm, m.gap_sm, m.gap_sm]
         self._docs_notice.spacing = m.gap_sm
-        self._open_docs_btn.size = (dp(96), dp(30))
+        self._open_docs_btn.size = (dp(92), m.mode_button_h)
 
-        self._msgs.spacing = dp(2)
+        self._msgs.spacing = m.gap_xs
+
+        if hasattr(self, "_empty_state"):
+            self._empty_state.padding = [m.gap_md, m.gap_sm, m.gap_md, m.gap_sm]
+            self._empty_state.spacing = m.gap_xs
+            self._empty_state.height = m.docs_summary_h + dp(20)
+            self._empty_actions.height = m.mode_button_h
+            self._empty_prompt_btn.size = (dp(88), m.mode_button_h)
+            self._empty_docs_btn.size = (dp(88), m.mode_button_h)
 
         self._input_zone.padding = [m.gap_sm, m.gap_sm, m.gap_sm, m.gap_sm]
         self._input_zone.spacing = m.gap_sm
 
-        self._composer_meta.height = dp(28)
+        self._composer_meta.height = m.mode_button_h
         self._composer_meta.spacing = m.gap_sm
-        self._btn_general.size = (dp(82), dp(28))
-        self._btn_document.size = (dp(64), dp(28))
+        self._btn_general.size = (dp(74), m.mode_button_h)
+        self._btn_document.size = (dp(58), m.mode_button_h)
+        self._engine_inline.size = (dp(106), m.mode_button_h)
 
-        self._input_row.height = m.input_zone_h - dp(18)
+        self._input_row.height = m.control_h
         self._input_row.spacing = m.gap_sm
 
-        control_h = dp(38)
-        self._attach_btn.size = (control_h, control_h)
+        control_h = m.control_h
+        self._attach_btn.size = (m.icon_button_h, m.icon_button_h)
 
         self._input_shell.height = control_h
-        self._input_shell.padding = [m.gap_md, m.gap_sm, m.gap_sm, m.gap_sm]
+        self._input_shell.padding = [m.gap_md, m.gap_xs, m.gap_sm, m.gap_xs]
         self._input_shell.spacing = m.gap_sm
-        self._send_btn.size = (dp(32), dp(32))
+        self._send_btn.size = (m.send_button_h, m.send_button_h)
 
+        base_input_h = m.input_zone_h + m.mode_button_h + m.gap_sm
         if self._pending_attach:
             self._attach_strip.height = m.attach_strip_h
-            self._input_zone.height = m.input_zone_h + m.attach_strip_h
+            self._input_zone.height = base_input_h + m.attach_strip_h
         else:
             self._attach_strip.height = 0
-            self._input_zone.height = m.input_zone_h
-
+            self._input_zone.height = base_input_h
         self._refresh_mode_hint()
         self._refresh_engine_card_height()
 
@@ -498,7 +572,20 @@ class ChatScreen(Screen):
 
     def _refresh_engine_card_height(self):
         m = self._metrics
-        self._engine_card.height = m.engine_collapsed_h if self._model_ready else m.engine_expanded_h
+        if self._model_ready:
+            self._engine_card.height = 0
+            self._engine_inline.opacity = 1
+            self._engine_inline_label.text = "ENGINE Ready"
+            self._engine_inline_label.color = Theme.SUCCESS
+        else:
+            self._engine_card.height = m.engine_expanded_h
+            self._engine_inline.opacity = 1
+            if self._engine_error:
+                self._engine_inline_label.text = "ENGINE Error"
+                self._engine_inline_label.color = Theme.DANGER
+            else:
+                self._engine_inline_label.text = "ENGINE Starting"
+                self._engine_inline_label.color = Theme.WARNING
 
     def _register_pipeline_callbacks(self, *_):
         self._controller.register_bootstrap_callbacks(on_progress=self._on_model_progress, on_done=self._on_model_ready)
@@ -523,6 +610,7 @@ class ChatScreen(Screen):
         self._last_model_update_at = now
 
         self._model_ready = False
+        self._engine_error = False
         self._engine_state.text = "[b]ENGINE:[/b] Starting"
         self._engine_state.color = Theme.WARNING
         self._engine_detail.text = f"{text or 'Preparing offline runtime'} ({pct}%)"
@@ -533,6 +621,7 @@ class ChatScreen(Screen):
     def _on_model_ready(self, success: bool, message: str):
         if success:
             self._model_ready = True
+            self._engine_error = False
             self._engine_state.text = "[b]ENGINE:[/b] Ready"
             self._engine_state.color = Theme.SUCCESS
             self._engine_detail.text = "Offline model is ready"
@@ -540,6 +629,7 @@ class ChatScreen(Screen):
             Clock.schedule_once(lambda *_: self._controller.start_service_once(), 0.05)
         else:
             self._model_ready = False
+            self._engine_error = True
             self._engine_state.text = "[b]ENGINE:[/b] Error"
             self._engine_state.color = Theme.DANGER
             self._engine_detail.text = message or "Model startup failed"
@@ -572,13 +662,21 @@ class ChatScreen(Screen):
         self._refresh_mode_hint()
 
         show_notice = self._selected_mode == CHAT_MODE_DOCUMENT and self._doc_count == 0
-        self._docs_notice.height = dp(44) if show_notice else 0
+        self._docs_notice.height = self._metrics.control_h if show_notice else 0
 
     def _go_to_docs(self):
         if callable(self._open_docs_tab):
             self._open_docs_tab()
 
+    def _prefill_prompt(self):
+        self._input.text = "What can you help me with offline?"
+
+    def _hide_empty_state(self):
+        if hasattr(self, "_empty_state") and self._empty_state.parent is self._msgs:
+            self._msgs.remove_widget(self._empty_state)
+
     def _show_typing(self):
+        self._hide_empty_state()
         self._typing = TypingIndicator(self._get_metrics)
         self._msgs.add_widget(self._typing)
         self._scroll_to_bottom()
@@ -590,6 +688,7 @@ class ChatScreen(Screen):
             self._typing = None
 
     def _add_msg(self, text: str, role: str = "assistant") -> RoleBubble:
+        self._hide_empty_state()
         row = RoleBubble(text=text, role=role, metrics_getter=self._get_metrics)
         self._msgs.add_widget(row)
         Clock.schedule_once(lambda *_: self._scroll_to_bottom(), 0)
@@ -799,6 +898,7 @@ class ChatScreen(Screen):
             )
 
     def _start_ingest(self, path: str, file_name: str):
+        self._hide_empty_state()
         card = IngestStatusCard(file_name, metrics_getter=self._get_metrics)
         self._msgs.add_widget(card)
         card.set_stage("queued", "Waiting to start")

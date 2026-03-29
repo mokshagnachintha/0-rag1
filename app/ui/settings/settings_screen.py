@@ -6,7 +6,7 @@ import time
 from app.rag import pipeline
 from app.runtime.bootstrap import BootstrapState
 from app.ui.chat.controller import ChatController
-from app.ui.responsive import current_metrics
+from app.ui.responsive import current_metrics, is_split_class
 from app.ui.theme import Theme, TypeScale
 from app.ui.widgets import PillButton, SurfaceCard, bind_label_size, paint_background
 
@@ -49,13 +49,13 @@ class SettingsScreen(Screen):
 
     def _build_ui(self):
         m = self._metrics
-        root = BoxLayout(orientation="horizontal" if m.size_class == "medium" else "vertical")
+        root = BoxLayout(orientation="horizontal" if is_split_class(m.size_class) else "vertical")
         paint_background(root, Theme.BG)
         root.padding = [m.screen_pad_h, m.screen_pad_v, m.screen_pad_h, m.screen_pad_v]
         root.spacing = m.gap_md
         self._root = root
 
-        left_col = BoxLayout(orientation="vertical", spacing=m.gap_sm, size_hint=(0.62, 1) if m.size_class == "medium" else (1, 1))
+        left_col = BoxLayout(orientation="vertical", spacing=m.gap_sm, size_hint=(m.split_primary_ratio, 1) if is_split_class(m.size_class) else (1, 1))
 
         self._engine_card = SurfaceCard(color=Theme.SURFACE, orientation="vertical", size_hint=(1, None))
         self._engine_state = Label(
@@ -144,14 +144,14 @@ class SettingsScreen(Screen):
 
         root.add_widget(left_col)
 
-        action_col = BoxLayout(orientation="vertical", size_hint=(0.38, 1) if m.size_class == "medium" else (1, None), spacing=m.gap_sm)
+        self._action_col = BoxLayout(orientation="vertical", size_hint=(1 - m.split_primary_ratio, 1) if is_split_class(m.size_class) else (1, None), spacing=m.gap_sm)
         self._action_card = SurfaceCard(color=Theme.SURFACE, orientation="vertical", size_hint=(1, None))
 
         refresh_btn = PillButton(
             text="Refresh Diagnostics",
             bg_color=Theme.PRIMARY_DARK,
             size_hint=(1, None),
-            height=dp(38),
+            height=m.control_h,
             font_size=TypeScale.SM,
             radius=m.control_radius,
         )
@@ -161,7 +161,7 @@ class SettingsScreen(Screen):
             text="Clear All Documents",
             bg_color=Theme.DANGER,
             size_hint=(1, None),
-            height=dp(38),
+            height=m.control_h,
             font_size=TypeScale.SM,
             radius=m.control_radius,
         )
@@ -169,8 +169,8 @@ class SettingsScreen(Screen):
 
         self._action_card.add_widget(refresh_btn)
         self._action_card.add_widget(self._clear_btn)
-        action_col.add_widget(self._action_card)
-        root.add_widget(action_col)
+        self._action_col.add_widget(self._action_card)
+        root.add_widget(self._action_col)
 
         self.add_widget(root)
         self._apply_layout_metrics()
@@ -178,19 +178,26 @@ class SettingsScreen(Screen):
     def _apply_layout_metrics(self):
         m = self._metrics
         self._root.padding = [m.screen_pad_h, m.screen_pad_v, m.screen_pad_h, m.screen_pad_v]
-        self._root.spacing = m.gap_md
+        self._root.spacing = m.gap_sm
 
-        self._engine_card.height = dp(82)
+        self._engine_card.height = m.docs_summary_h + m.gap_sm
         self._engine_card.padding = [m.gap_md, m.gap_sm, m.gap_md, m.gap_sm]
-        self._engine_card.spacing = dp(2)
+        self._engine_card.spacing = m.gap_xs
 
-        self._stats_card.height = dp(76)
+        self._stats_card.height = m.docs_summary_h + m.gap_xs
         self._stats_card.padding = [m.gap_md, m.gap_sm, m.gap_md, m.gap_sm]
-        self._stats_card.spacing = dp(2)
+        self._stats_card.spacing = m.gap_xs
 
-        self._action_card.height = dp(92)
+        self._action_card.height = (m.control_h * 2) + (m.gap_sm * 3)
         self._action_card.padding = [m.gap_sm, m.gap_sm, m.gap_sm, m.gap_sm]
         self._action_card.spacing = m.gap_sm
+
+        if is_split_class(m.size_class):
+            self._action_col.size_hint = (1 - m.split_primary_ratio, 1)
+            self._action_col.height = 0
+        else:
+            self._action_col.size_hint = (1, None)
+            self._action_col.height = self._action_card.height
 
     def _register_bootstrap_callbacks(self):
         self._controller.register_bootstrap_callbacks(
