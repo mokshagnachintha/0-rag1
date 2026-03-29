@@ -1,91 +1,156 @@
-"""
-main.py — Offline RAG App entry point (Kivy / Android).
+"""Offline RAG app entry point with segmented top navigation."""
 
-Single-screen design: one chat interface.
-  • Tap + to attach a PDF or TXT document (RAG mode activates automatically)
-  • Otherwise chat freely with the AI
-  • Model is bundled in the APK — extracted to device storage on first launch
-"""
-
-# ── Kivy config BEFORE any other kivy import ──────────────────────── #
 import os
 os.environ.setdefault("KIVY_LOG_LEVEL", "warning")
 
 from app.config import ENV_FORCE_BOOTSTRAP_DOWNLOAD
-# Desktop development helper:
-# force model bootstrap download flow on every local run.
-# (Android builds are unaffected.)
+
 if not os.environ.get("ANDROID_PRIVATE"):
     os.environ.setdefault(ENV_FORCE_BOOTSTRAP_DOWNLOAD, "1")
 
 from kivy.config import Config
-Config.set("kivy", "window_icon", "assets/icon.png")
-# ─────────────────────────────────────────────────────────────────── #
+Config.set("kivy", "window_icon", "assets/app_icon.png")
 
-# Keep input bar visible above the soft keyboard on Android
 from kivy.core.window import Window
 Window.softinput_mode = "below_target"
 
 from kivy.app import App
-from kivy.uix.screenmanager import ScreenManager, FadeTransition
-from kivy.uix.boxlayout import BoxLayout
-from kivy.graphics import Color, Rectangle
 from kivy.clock import Clock
+from kivy.graphics import Color, Rectangle
+from kivy.metrics import dp
+from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.label import Label
+from kivy.uix.screenmanager import NoTransition, ScreenManager
 
 import sys
 import threading
 import traceback
+
 sys.path.insert(0, os.path.dirname(__file__))
 
-from app.ui.chat.chat_screen import ChatScreen
 from app.rag.pipeline import init
+from app.ui.chat.chat_screen import ChatScreen
+from app.ui.docs.docs_screen import DocsScreen
+from app.ui.settings.settings_screen import SettingsScreen
+from app.ui.theme import MIN_TOUCH, Radius, Space, Theme, TypeScale
+from app.ui.widgets import PillButton, SurfaceCard, bind_label_size, paint_background
 
 
 def _global_exception_handler(exc_type, exc_value, exc_tb):
     """Log unhandled exceptions instead of silently crashing."""
     msg = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
     print(f"[CRASH] Unhandled exception:\n{msg}")
-    # Write to Android log file if possible
-    priv = os.environ.get("ANDROID_PRIVATE", "")
-    if priv:
+    private_dir = os.environ.get("ANDROID_PRIVATE", "")
+    if private_dir:
         try:
-            with open(os.path.join(priv, "crash.log"), "a") as f:
-                f.write(msg + "\n")
+            with open(os.path.join(private_dir, "crash.log"), "a", encoding="utf-8") as handle:
+                handle.write(msg + "\n")
         except Exception:
             pass
 
+
 sys.excepthook = _global_exception_handler
+
+
+class AppShell(BoxLayout):
+    def __init__(self, **kwargs):
+        super().__init__(orientation="vertical", **kwargs)
+        paint_background(self, Theme.BG)
+        self._tabs: dict[str, PillButton] = {}
+        self._build_ui()
+
+    def _build_ui(self):
+        top = SurfaceCard(
+            radius=0,
+            color=Theme.SURFACE,
+            orientation="vertical",
+            size_hint=(1, None),
+            height=dp(130),
+            padding=[Space.MD, Space.SM],
+            spacing=Space.SM,
+        )
+
+        title = Label(
+            text="[b]O-RAG[/b]",
+            markup=True,
+            color=Theme.TEXT,
+            font_size=TypeScale.XL,
+            halign="left",
+            valign="middle",
+            size_hint=(1, None),
+            height=dp(28),
+        )
+        bind_label_size(title)
+        top.add_widget(title)
+
+        segmented = SurfaceCard(
+            radius=Radius.PILL,
+            color=Theme.SURFACE_ALT,
+            orientation="horizontal",
+            size_hint=(1, None),
+            height=MIN_TOUCH + 8,
+            padding=[Space.XS, Space.XS],
+            spacing=Space.XS,
+        )
+
+        for label, name in (("Chat", "chat"), ("Documents", "docs"), ("Settings", "settings")):
+            btn = PillButton(
+                text=label,
+                bg_color=Theme.SURFACE_ALT,
+                size_hint=(1, None),
+                height=MIN_TOUCH,
+                font_size=TypeScale.SM,
+            )
+            btn.bind(on_release=lambda _, target=name: self.switch_tab(target))
+            segmented.add_widget(btn)
+            self._tabs[name] = btn
+
+        top.add_widget(segmented)
+        self.add_widget(top)
+
+        self._screens = ScreenManager(transition=NoTransition())
+        self._screens.add_widget(ChatScreen(name="chat", open_docs_tab=lambda: self.switch_tab("docs")))
+        self._screens.add_widget(DocsScreen(name="docs"))
+        self._screens.add_widget(SettingsScreen(name="settings"))
+        self.add_widget(self._screens)
+
+        self.switch_tab("chat")
+
+    def switch_tab(self, name: str):
+        if name not in self._tabs:
+            return
+        self._screens.current = name
+        for key, btn in self._tabs.items():
+            if key == name:
+                btn.set_bg(Theme.PRIMARY)
+                btn.color = Theme.TEXT
+            else:
+                btn.set_bg(Theme.SURFACE_ALT)
+                btn.color = Theme.TEXT_MUTED
 
 
 class RAGApp(App):
     title = "O-RAG"
 
     def _start_pipeline_init_async(self, *_):
-        """Run heavy startup work off the UI thread to avoid ANR/freezes."""
         def _run():
             try:
                 init()
             except Exception:
                 _global_exception_handler(*sys.exc_info())
+
         threading.Thread(target=_run, daemon=True).start()
 
     def build(self):
         root = BoxLayout(orientation="vertical")
         with root.canvas.before:
-            Color(0.102, 0.102, 0.102, 1)   # #1a1a1a
+            Color(*Theme.BG)
             bg = Rectangle()
-        root.bind(
-            pos =lambda w, _: setattr(bg, "pos",  w.pos),
-            size=lambda w, _: setattr(bg, "size", w.size),
-        )
+        root.bind(pos=lambda w, _: setattr(bg, "pos", w.pos), size=lambda w, _: setattr(bg, "size", w.size))
 
-        sm = ScreenManager(transition=FadeTransition(duration=0.12))
-        sm.add_widget(ChatScreen(name="chat"))
-        root.add_widget(sm)
+        shell = AppShell()
+        root.add_widget(shell)
 
-        # Init DB + retriever + model bootstrap in background thread.
-        # Delay by 0.3 s so the ChatScreen's pipeline callbacks are registered
-        # first — prevents a race where models load before the UI can hear about it.
         Clock.schedule_once(self._start_pipeline_init_async, 0.3)
         return root
 

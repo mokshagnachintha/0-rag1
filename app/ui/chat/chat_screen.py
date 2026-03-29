@@ -1,759 +1,731 @@
-"""
-chat_screen.py - Unified single-screen chat + document interface.
-
-Design:
-  - Header: "Offline RAG" title only - no tabs or mode toggles.
-  - Chat area inheriting ChatGPT dark style.
-  - Bottom bar: [+] attach  |  [text input pill]  |  [> send]
-  - Tap + to pick a PDF/TXT via the native file browser.
-    - Document ingestion progress shown inline as a status card.
-    - Once any doc is loaded the AI auto-answers from it (RAG mode).
-    - With no docs, the AI just chats freely (direct mode).
-  - Model download / loading progress shown in the welcome message.
-"""
+"""Premium chat screen for explicit General Chat and Document Q&A modes."""
 from __future__ import annotations
+
 import time
+from pathlib import Path
 
+from app.runtime.bootstrap import BootstrapState
 from app.ui.chat.controller import ChatController
+from app.ui.chat.mode_logic import (
+    CHAT_MODE_DOCUMENT,
+    CHAT_MODE_GENERAL,
+    is_quit_rag_alias,
+    mode_title,
+    resolve_send_mode,
+)
+from app.ui.theme import MIN_TOUCH, Radius, Space, Theme, TypeScale
+from app.ui.widgets import PillButton, SurfaceCard, bind_label_size, paint_background
 
+from kivy.clock import Clock, mainthread
+from kivy.metrics import dp
+from kivy.uix.anchorlayout import AnchorLayout
+from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.button import Button
+from kivy.uix.label import Label
 from kivy.uix.screenmanager import Screen
-from kivy.uix.boxlayout     import BoxLayout
-from kivy.uix.anchorlayout  import AnchorLayout
-from kivy.uix.scrollview    import ScrollView
-from kivy.uix.label         import Label
-from kivy.uix.textinput     import TextInput
-from kivy.uix.button        import Button
-from kivy.uix.widget        import Widget
-from kivy.uix.progressbar   import ProgressBar
-from kivy.clock             import Clock, mainthread
-from kivy.metrics           import dp, sp
-from kivy.graphics          import Color, RoundedRectangle, Rectangle
-from kivy.animation         import Animation
-from kivy.utils             import escape_markup
-from kivy.effects.scroll    import ScrollEffect
-
-# Palette
-_BG        = (0.102, 0.102, 0.102, 1)   # #1a1a1a  page background
-_HDR_BG    = (0.078, 0.078, 0.078, 1)   # #141414  header strip
-_USER_BG   = (0.184, 0.184, 0.184, 1)   # #2f2f2f  user bubble
-_INPUT_BG  = (0.173, 0.173, 0.173, 1)   # #2c2c2c  text-input wrap
-_GREEN     = (0.098, 0.761, 0.490, 1)   # #19c37d  ChatGPT green
-_ADD_BG    = (0.220, 0.220, 0.220, 1)   # #383838  + button
-_WHITE     = (1,    1,    1,    1)
-_MUTED     = (0.55, 0.55, 0.58, 1)
-_DIVIDER   = (0.20, 0.20, 0.20, 1)
-_DOC_CARD  = (0.12, 0.22, 0.17, 1)      # dark teal for doc status card
-_ATTACH_BG = (0.165, 0.165, 0.165, 1)   # attachment preview card background
-_RED_ICON  = (0.85, 0.18, 0.18, 1)      # PDF icon red
+from kivy.uix.scrollview import ScrollView
+from kivy.uix.textinput import TextInput
+from kivy.uix.widget import Widget
+from kivy.utils import escape_markup
 
 
-# ------------------------------------------------------------------ #
-#  Helpers                                                             #
-# ------------------------------------------------------------------ #
+class RoleBubble(BoxLayout):
+    """Single message row with side-aware bubble alignment."""
 
-def _paint(widget, color, radius: float = 0):
-    """Bind a solid colour background to a widget's canvas.before."""
-    with widget.canvas.before:
-        Color(*color)
-        r = (RoundedRectangle(radius=[dp(radius)]) if radius else Rectangle())
-    widget.bind(
-        pos =lambda w, _: setattr(r, "pos",  w.pos),
-        size=lambda w, _: setattr(r, "size", w.size),
-    )
-    return r
-
-
-# ------------------------------------------------------------------ #
-#  Avatar circle (letters "U" / "AI")                                 #
-# ------------------------------------------------------------------ #
-
-class _Avatar(Widget):
-    _COLS = {
-        "user":      (0.40, 0.40, 0.90, 1),
-        "assistant": _GREEN,
-        "system":    (0.80, 0.20, 0.20, 1),
-    }
-
-    def __init__(self, role: str, **kw):
-        super().__init__(size_hint=(None, None), size=(dp(32), dp(32)), **kw)
-        letter = {"user": "U", "assistant": "AI", "system": "!"}.get(role, "?")
-        with self.canvas:
-            Color(*self._COLS.get(role, (0.5, 0.5, 0.5, 1)))
-            self._circ = RoundedRectangle(radius=[dp(16)])
-        self.bind(pos=self._upd, size=self._upd)
-        self._lbl = Label(text=letter, font_size=sp(11), bold=True, color=_WHITE)
-        self.add_widget(self._lbl)
-
-    def _upd(self, *_):
-        self._circ.pos  = self.pos
-        self._circ.size = self.size
-        self._lbl.center = self.center
-
-
-# ------------------------------------------------------------------ #
-#  Message row (user bubble right / assistant text left)              #
-# ------------------------------------------------------------------ #
-
-class MessageRow(BoxLayout):
-    def __init__(self, text: str, role: str = "assistant", **kw):
+    def __init__(self, text: str, role: str = "assistant", **kwargs):
         super().__init__(
             orientation="horizontal",
             size_hint=(1, None),
-            padding=[dp(12), dp(8), dp(12), dp(8)],
-            spacing=dp(10),
-            **kw,
+            padding=[Space.SM, Space.XS, Space.SM, Space.XS],
+            spacing=Space.XS,
+            **kwargs,
         )
         self.role = role
-        self._lbl = Label(
-            text=text, markup=True,
-            size_hint_y=None, text_size=(None, None),
-            halign="left", valign="top",
-            color=_WHITE, font_size=sp(14.5),
+        self._label = Label(
+            text=text,
+            markup=True,
+            size_hint=(None, None),
+            text_size=(dp(220), None),
+            halign="left",
+            valign="middle",
+            color=Theme.TEXT,
+            font_size=TypeScale.MD,
         )
-        self._lbl.bind(texture_size=self._on_tex)
-        self.bind(width=self._on_w)
-        _paint(self, _BG)
+        self._label.bind(texture_size=self._on_texture)
+        self.bind(width=self._on_width)
+        self._build()
 
-        if role == "user":
-            self._build_user()
-        else:
-            self._build_asst()
+    def _build(self) -> None:
+        bubble_color = Theme.USER_BUBBLE if self.role == "user" else Theme.ASSISTANT_BUBBLE
+        bubble = SurfaceCard(
+            radius=Radius.LG,
+            color=bubble_color,
+            size_hint=(None, None),
+            padding=[Space.MD, Space.SM],
+            orientation="vertical",
+        )
+        bubble.add_widget(self._label)
+        self._bubble = bubble
 
-    def _build_user(self):
-        self.add_widget(Widget(size_hint_x=1))           # push right
-        bub = BoxLayout(size_hint=(None, None), padding=[dp(12), dp(10)])
-        _paint(bub, _USER_BG, radius=18)
-        bub.add_widget(self._lbl)
-        self._bub = bub
-        self.add_widget(bub)
-        self.add_widget(_Avatar("user"))
-
-    def _build_asst(self):
-        self.add_widget(_Avatar("assistant"))
-        self.add_widget(self._lbl)
-
-    def _on_tex(self, lbl, ts):
-        new_lbl_h = ts[1] + dp(4)
-        if abs(lbl.height - new_lbl_h) > 0.5:
-            lbl.height = new_lbl_h
-
-        if self.role == "user" and hasattr(self, "_bub"):
-            new_bub_w = min(ts[0] + dp(28), self.width * 0.82)
-            new_bub_h = lbl.height + dp(20)
-            if abs(self._bub.width - new_bub_w) > 0.5:
-                self._bub.width = new_bub_w
-            if abs(self._bub.height - new_bub_h) > 0.5:
-                self._bub.height = new_bub_h
-
-        new_row_h = max(lbl.height + dp(20), dp(52))
-        if abs(self.height - new_row_h) > 0.5:
-            self.height = new_row_h
-
-    def _on_w(self, *_):
-        avail = max(1, self.width - dp(72))
         if self.role == "user":
-            target = (avail * 0.82, None)
+            self.add_widget(Widget(size_hint_x=1))
+            self.add_widget(self._role_chip("YOU"))
+            self.add_widget(bubble)
         else:
-            target = (avail, None)
-        if self._lbl.text_size != target:
-            self._lbl.text_size = target
+            self.add_widget(bubble)
+            self.add_widget(self._role_chip("AI"))
+            self.add_widget(Widget(size_hint_x=1))
 
-    def append(self, token: str):
-        # Streamed model tokens can contain markup-like fragments (e.g. "[" / "]")
-        # that make Kivy re-parse text repeatedly and cause visual glitches.
-        self._lbl.text += escape_markup(token)
+    def _role_chip(self, text: str) -> Widget:
+        holder = AnchorLayout(size_hint=(None, None), size=(dp(36), dp(28)))
+        chip = SurfaceCard(
+            radius=Radius.SM,
+            color=Theme.SURFACE_ALT,
+            size_hint=(None, None),
+            size=(dp(34), dp(24)),
+            padding=[0, 0],
+        )
+        lbl = Label(text=text, color=Theme.TEXT_MUTED, font_size=TypeScale.XS, bold=True)
+        bind_label_size(lbl)
+        chip.add_widget(lbl)
+        holder.add_widget(chip)
+        return holder
+
+    def _on_texture(self, _, texture_size) -> None:
+        if not hasattr(self, "_bubble"):
+            return
+        width = min(texture_size[0] + dp(8), self.width * 0.76)
+        self._label.size = (width, texture_size[1] + dp(4))
+        self._bubble.size = (width + Space.LG * 2, self._label.height + Space.SM * 2)
+        self.height = self._bubble.height + Space.SM
+
+    def _on_width(self, *_):
+        max_width = max(dp(160), self.width * 0.72)
+        self._label.text_size = (max_width, None)
+
+    def append(self, token: str) -> None:
+        self._label.text += escape_markup(token)
 
 
-# ------------------------------------------------------------------ #
-#  Attachment preview card (ChatGPT-style, shown above input bar)     #
-# ------------------------------------------------------------------ #
+class IngestStatusCard(SurfaceCard):
+    """Honest ingest stage card; does not imply granular progress."""
 
-class AttachmentPreviewCard(BoxLayout):
-    """
-    Shows a PDF/TXT attachment thumbnail above the message input,
-    matching the ChatGPT attachment card style.
-    """
-    def __init__(self, filepath: str, on_remove, **kw):
-        import os
+    _COLORS = {
+        "queued": Theme.TEXT_MUTED,
+        "ingesting": Theme.WARNING,
+        "indexed": Theme.SUCCESS,
+        "failed": Theme.DANGER,
+    }
+
+    def __init__(self, filename: str, **kwargs):
         super().__init__(
+            radius=Radius.MD,
+            color=Theme.SURFACE,
+            orientation="vertical",
+            size_hint=(1, None),
+            padding=[Space.MD, Space.SM],
+            spacing=Space.XS,
+            **kwargs,
+        )
+        self._file = escape_markup(filename)
+        self._title = Label(
+            text=f"[b]Document:[/b] {self._file}",
+            markup=True,
+            color=Theme.TEXT,
+            halign="left",
+            valign="middle",
+            size_hint=(1, None),
+            height=dp(24),
+            font_size=TypeScale.SM,
+        )
+        bind_label_size(self._title)
+        self._stage = Label(
+            text="Queued",
+            color=self._COLORS["queued"],
+            halign="left",
+            valign="middle",
+            size_hint=(1, None),
+            height=dp(22),
+            font_size=TypeScale.SM,
+        )
+        bind_label_size(self._stage)
+        self.add_widget(self._title)
+        self.add_widget(self._stage)
+        self.height = dp(78)
+
+    def set_stage(self, stage: str, detail: str = "") -> None:
+        label = stage.capitalize()
+        if detail:
+            label = f"{label}: {escape_markup(detail)}"
+        self._stage.color = self._COLORS.get(stage, Theme.TEXT_MUTED)
+        self._stage.text = label
+
+    def set_done(self, success: bool, message: str) -> None:
+        if success:
+            self.set_stage("indexed", message)
+        else:
+            self.set_stage("failed", message)
+
+
+class AttachmentPreviewCard(SurfaceCard):
+    def __init__(self, filepath: str, on_remove, **kwargs):
+        super().__init__(
+            radius=Radius.MD,
+            color=Theme.SURFACE_ALT,
             orientation="horizontal",
             size_hint=(None, None),
-            size=(dp(220), dp(68)),
-            padding=[dp(10), dp(8), dp(8), dp(8)],
-            spacing=dp(10),
-            **kw,
+            size=(dp(250), dp(66)),
+            padding=[Space.SM, Space.SM],
+            spacing=Space.SM,
+            **kwargs,
         )
-        _paint(self, _ATTACH_BG, radius=14)
 
-        fname = os.path.basename(filepath)
-        ext   = os.path.splitext(fname)[1].upper().lstrip(".") or "FILE"
-        try:
-            sz_kb = os.path.getsize(filepath) // 1024
-            size_txt = f"{sz_kb} KB" if sz_kb < 1024 else f"{sz_kb//1024} MB"
-        except Exception:
-            size_txt = ""
+        name = Path(filepath).name
+        ext = Path(filepath).suffix.upper().replace(".", "") or "FILE"
+        title = name if len(name) <= 28 else f"{name[:25]}..."
 
-        # PDF/TXT icon box
-        icon_box = BoxLayout(
-            size_hint=(None, None), size=(dp(42), dp(42)),
+        icon = SurfaceCard(
+            radius=Radius.SM,
+            color=Theme.PRIMARY_DARK,
+            size_hint=(None, None),
+            size=(dp(42), dp(42)),
         )
-        _paint(icon_box, _RED_ICON, radius=8)
-        icon_lbl = Label(
-            text=f"[b]{ext[:4]}[/b]", markup=True,
-            font_size=sp(10), color=_WHITE,
-            halign="center", valign="middle",
-        )
-        icon_lbl.bind(size=lambda w, _: setattr(w, "text_size", w.size))
-        icon_box.add_widget(icon_lbl)
-        self.add_widget(icon_box)
+        icon_lbl = Label(text=ext[:4], color=Theme.TEXT, bold=True, font_size=TypeScale.XS)
+        bind_label_size(icon_lbl)
+        icon.add_widget(icon_lbl)
+        self.add_widget(icon)
 
-        # Filename + size
-        info = BoxLayout(
-            orientation="vertical", size_hint=(1, 1), spacing=dp(2),
-        )
-        # Truncate long filenames
-        display = fname if len(fname) <= 22 else fname[:19] + "..."
-        display = escape_markup(display)
+        info = BoxLayout(orientation="vertical", spacing=dp(2))
         name_lbl = Label(
-            text=f"[b]{display}[/b]", markup=True,
-            font_size=sp(12), color=_WHITE,
-            halign="left", valign="middle",
-            size_hint_y=None, height=dp(22),
+            text=f"[b]{escape_markup(title)}[/b]",
+            markup=True,
+            color=Theme.TEXT,
+            font_size=TypeScale.SM,
+            halign="left",
+            valign="middle",
+            size_hint=(1, None),
+            height=dp(22),
         )
-        name_lbl.bind(size=lambda w, _: setattr(w, "text_size", (w.width, w.height)))
-
+        bind_label_size(name_lbl)
         type_lbl = Label(
-            text=f"{ext} - {size_txt}" if size_txt else ext,
-            font_size=sp(10.5), color=_MUTED,
-            halign="left", valign="middle",
-            size_hint_y=None, height=dp(18),
+            text=f"{ext} attachment",
+            color=Theme.TEXT_MUTED,
+            font_size=TypeScale.XS,
+            halign="left",
+            valign="middle",
+            size_hint=(1, None),
+            height=dp(18),
         )
-        type_lbl.bind(size=lambda w, _: setattr(w, "text_size", (w.width, w.height)))
-
+        bind_label_size(type_lbl)
         info.add_widget(name_lbl)
         info.add_widget(type_lbl)
         self.add_widget(info)
 
-        # x remove button
-        x_btn = Button(
-            text="x", font_size=sp(13),
-            size_hint=(None, None), size=(dp(24), dp(24)),
-            background_normal="", background_color=(0, 0, 0, 0),
-            color=_MUTED,
+        remove_btn = Button(
+            text="X",
+            size_hint=(None, None),
+            size=(dp(24), dp(24)),
+            background_normal="",
+            background_color=(0, 0, 0, 0),
+            color=Theme.TEXT_MUTED,
+            font_size=TypeScale.SM,
         )
-        x_btn.bind(on_release=lambda *_: on_remove())
-        anc = AnchorLayout(
-            size_hint=(None, 1), width=dp(28),
-            anchor_x="center", anchor_y="center",
-        )
-        anc.add_widget(x_btn)
-        self.add_widget(anc)
+        remove_btn.bind(on_release=lambda *_: on_remove())
+        self.add_widget(remove_btn)
 
 
-# ------------------------------------------------------------------ #
-#  Document ingestion status card                                      #
-# ------------------------------------------------------------------ #
-
-class DocStatusCard(BoxLayout):
-    """
-    Inline card that shows file name + progress indicator while a
-    document is being chunked and indexed.
-    """
-    def __init__(self, filename: str, **kw):
-        super().__init__(
-            orientation="vertical",
-            size_hint=(1, None),
-            padding=[dp(14), dp(8), dp(14), dp(8)],
-            spacing=dp(4),
-            **kw,
-        )
-        _paint(self, _BG)
-
-        inner = BoxLayout(
-            orientation="vertical",
-            size_hint=(1, None),
-            padding=[dp(14), dp(12)],
-            spacing=dp(6),
-        )
-        _paint(inner, _DOC_CARD, radius=14)
-
-        self._title = Label(
-            text=f"[b]DOC  {escape_markup(filename)}[/b]",
-            markup=True,
-            color=_WHITE, font_size=sp(13),
-            size_hint_y=None, height=dp(22),
-            halign="left", valign="middle",
-        )
-        self._title.bind(size=lambda w, _: setattr(w, "text_size", (w.width, None)))
-
-        self._status = Label(
-            text="Indexing...",
-            color=_GREEN, font_size=sp(12),
-            size_hint_y=None, height=dp(18),
-            halign="left", valign="middle",
-        )
-        self._status.bind(size=lambda w, _: setattr(w, "text_size", (w.width, None)))
-
-        self._bar = ProgressBar(
-            max=100, value=10,
-            size_hint=(1, None), height=dp(5),
-        )
-
-        inner.add_widget(self._title)
-        inner.add_widget(self._status)
-        inner.add_widget(self._bar)
-        inner.bind(minimum_height=inner.setter("height"))
-
-        self.add_widget(inner)
-        self.bind(minimum_height=self.setter("height"))
-
-    def set_done(self, success: bool, message: str):
-        self._bar.value = 100 if success else 0
-        col  = "00cc66" if success else "ff5555"
-        self._status.text   = f"[color={col}]{message}[/color]"
-        self._status.markup = True
-
-
-# ------------------------------------------------------------------ #
-#  Typing indicator  . . .                                            #
-# ------------------------------------------------------------------ #
-
-class _TypingIndicator(BoxLayout):
-    def __init__(self, **kw):
+class TypingIndicator(BoxLayout):
+    def __init__(self, **kwargs):
         super().__init__(
             orientation="horizontal",
-            size_hint=(1, None), height=dp(40),
-            padding=[dp(56), dp(4)], spacing=dp(6),
-            **kw,
+            spacing=dp(5),
+            size_hint=(1, None),
+            height=dp(28),
+            padding=[Space.MD, 0],
+            **kwargs,
         )
         self._dots: list[Label] = []
-        for _ in range(3):
-            d = Label(
-                text=".", font_size=sp(10), color=_MUTED,
-                size_hint=(None, None), size=(dp(14), dp(14)),
-            )
-            self._dots.append(d)
-            self.add_widget(d)
         self._tick = 0
-        Clock.schedule_interval(self._anim, 0.42)
+        for _ in range(3):
+            dot = Label(text=".", color=Theme.TEXT_MUTED, font_size=TypeScale.MD, size_hint=(None, 1), width=dp(12))
+            self._dots.append(dot)
+            self.add_widget(dot)
+        Clock.schedule_interval(self._pulse, 0.36)
 
-    def _anim(self, *_):
-        for i, d in enumerate(self._dots):
-            d.color = _WHITE if i == self._tick % 3 else _MUTED
+    def _pulse(self, *_):
+        for index, dot in enumerate(self._dots):
+            dot.color = Theme.TEXT if index == self._tick % 3 else Theme.TEXT_MUTED
         self._tick += 1
 
-    def stop(self):
-        Clock.unschedule(self._anim)
+    def stop(self) -> None:
+        Clock.unschedule(self._pulse)
 
-
-# ================================================================== #
-#  ChatScreen                                                         #
-# ================================================================== #
 
 class ChatScreen(Screen):
-    """
-    Single-screen UI.  No tab bar.
-    Internal mode tracked automatically:
-      _has_docs=True  ->  RAG (answer from indexed document chunks)
-      _has_docs=False ->  direct LLM chat with rolling history
-    """
+    """Single chat screen with explicit interaction mode and state banners."""
 
-    def __init__(self, **kw):
-        super().__init__(**kw)
-        self._history:        list                    = []
-        self._history_summary: str                    = ""  # compressed older turns
-        self._token_buf:      list                    = []  # token batch buffer
-        self._token_flush_ev  = None                        # pending Clock event
-        self._pending_q:      str                     = ""
-        self._current_row:    MessageRow | None       = None
-        self._typing:         _TypingIndicator | None = None
-        self._has_docs:       bool                    = False
-        self._rag_doc_name:   str                     = ""
-        self._pending_attach: str | None              = None
-        self._attach_card:    AttachmentPreviewCard | None = None
-        self._scroll_pending: bool                   = False
-        self._streaming_active: bool                 = False
+    _PICK_REQ = 0x4F52
+
+    def __init__(self, open_docs_tab=None, **kwargs):
+        super().__init__(**kwargs)
+        self._open_docs_tab = open_docs_tab
         self._controller = ChatController()
-        self._model_ready:    bool                   = False   # True once LLM is loaded
-        self._send_btn:       Button | None          = None    # ref for dimming
-        self._perm_requested: bool                   = False
-        self._last_model_stage: str                  = ""
-        self._last_model_pct: int                    = -1
-        self._last_model_update_at: float            = 0.0
+
+        self._selected_mode = CHAT_MODE_GENERAL
+        self._model_ready = False
+        self._doc_count = 0
+        self._pending_attach: str | None = None
+        self._picker_open = False
+        self._perm_requested = False
+
+        self._history: list[tuple[str, str]] = []
+        self._history_summary = ""
+
+        self._streaming_active = False
+        self._pending_q = ""
+        self._active_response_mode = CHAT_MODE_GENERAL
+        self._current_row: RoleBubble | None = None
+        self._typing: TypingIndicator | None = None
+        self._token_buf: list[str] = []
+        self._token_flush_ev = None
+
+        self._last_model_stage = ""
+        self._last_model_pct = -1
+        self._last_model_update_at = 0.0
+
         self._build_ui()
 
-    # ---------------------------------------------------------------- #
-    #  Layout                                                           #
-    # ---------------------------------------------------------------- #
+    def on_pre_enter(self, *_):
+        self._refresh_document_inventory()
 
-    def _build_ui(self):
-        root = BoxLayout(orientation="vertical")
-        _paint(root, _BG)
+    def _build_ui(self) -> None:
+        root = BoxLayout(orientation="vertical", spacing=Space.SM, padding=[Space.SM, Space.SM, Space.SM, Space.SM])
+        paint_background(root, Theme.BG)
 
-        # Header
-        hdr = BoxLayout(
-            size_hint=(1, None), height=dp(54),
-            padding=[dp(16), dp(0)],
-        )
-        _paint(hdr, _HDR_BG)
-        hdr_lbl = Label(
-            text="[b]O-RAG[/b]", markup=True,
-            color=_WHITE, font_size=sp(16),
-            halign="center", valign="middle",
-        )
-        hdr_lbl.bind(size=lambda w, _: setattr(w, "text_size", (w.width, w.height)))
-        hdr.add_widget(hdr_lbl)
-        root.add_widget(hdr)
-
-        sep = Widget(size_hint=(1, None), height=dp(1))
-        _paint(sep, _DIVIDER)
-        root.add_widget(sep)
-
-        # Message list
-        self._scroll = ScrollView(
-            size_hint=(1, 1), do_scroll_x=False, bar_width=dp(3),
-            effect_cls=ScrollEffect,
-        )
-        _paint(self._scroll, _BG)
-
-        self._msgs = BoxLayout(
+        self._engine_card = SurfaceCard(
+            radius=Radius.LG,
+            color=Theme.SURFACE,
             orientation="vertical",
-            size_hint=(1, None), spacing=0,
+            size_hint=(1, None),
+            height=dp(102),
+            padding=[Space.MD, Space.SM],
+            spacing=dp(2),
         )
+        self._engine_state = Label(
+            text="[b]ENGINE:[/b] Starting",
+            markup=True,
+            color=Theme.WARNING,
+            halign="left",
+            valign="middle",
+            size_hint=(1, None),
+            height=dp(22),
+            font_size=TypeScale.SM,
+        )
+        bind_label_size(self._engine_state)
+        self._engine_title = Label(
+            text="Bootstrapping offline AI model",
+            color=Theme.TEXT,
+            halign="left",
+            valign="middle",
+            size_hint=(1, None),
+            height=dp(24),
+            font_size=TypeScale.LG,
+            bold=True,
+        )
+        bind_label_size(self._engine_title)
+        self._engine_detail = Label(
+            text="Preparing assets and service.",
+            color=Theme.TEXT_MUTED,
+            halign="left",
+            valign="middle",
+            size_hint=(1, None),
+            height=dp(22),
+            font_size=TypeScale.SM,
+        )
+        bind_label_size(self._engine_detail)
+        self._engine_card.add_widget(self._engine_state)
+        self._engine_card.add_widget(self._engine_title)
+        self._engine_card.add_widget(self._engine_detail)
+        root.add_widget(self._engine_card)
+
+        mode_row = SurfaceCard(
+            radius=Radius.MD,
+            color=Theme.SURFACE,
+            orientation="horizontal",
+            size_hint=(1, None),
+            height=dp(56),
+            spacing=Space.SM,
+            padding=[Space.SM, Space.XS],
+        )
+        self._btn_general = PillButton(
+            text="General Chat",
+            bg_color=Theme.PRIMARY,
+            size_hint=(0.5, None),
+            height=MIN_TOUCH,
+            font_size=TypeScale.SM,
+        )
+        self._btn_general.bind(on_release=lambda *_: self._set_mode(CHAT_MODE_GENERAL))
+
+        self._btn_document = PillButton(
+            text="Document Q&A",
+            bg_color=Theme.SURFACE_ALT,
+            size_hint=(0.5, None),
+            height=MIN_TOUCH,
+            font_size=TypeScale.SM,
+        )
+        self._btn_document.bind(on_release=lambda *_: self._set_mode(CHAT_MODE_DOCUMENT))
+
+        mode_row.add_widget(self._btn_general)
+        mode_row.add_widget(self._btn_document)
+        root.add_widget(mode_row)
+
+        self._mode_caption = Label(
+            text="",
+            color=Theme.TEXT_MUTED,
+            font_size=TypeScale.XS,
+            halign="left",
+            valign="middle",
+            size_hint=(1, None),
+            height=dp(18),
+        )
+        bind_label_size(self._mode_caption)
+        root.add_widget(self._mode_caption)
+
+        self._docs_notice = SurfaceCard(
+            radius=Radius.MD,
+            color=Theme.SURFACE_ALT,
+            orientation="horizontal",
+            size_hint=(1, None),
+            height=0,
+            spacing=Space.SM,
+            padding=[Space.SM, Space.XS],
+        )
+        notice_lbl = Label(
+            text="Document mode is empty. Add a file from Documents tab.",
+            color=Theme.TEXT_MUTED,
+            font_size=TypeScale.XS,
+            halign="left",
+            valign="middle",
+        )
+        bind_label_size(notice_lbl)
+        open_docs = PillButton(
+            text="Open Documents",
+            bg_color=Theme.PRIMARY_DARK,
+            size_hint=(None, None),
+            size=(dp(132), MIN_TOUCH),
+            font_size=TypeScale.XS,
+        )
+        open_docs.bind(on_release=lambda *_: self._go_to_docs())
+        self._docs_notice.add_widget(notice_lbl)
+        self._docs_notice.add_widget(open_docs)
+        root.add_widget(self._docs_notice)
+
+        self._scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False)
+        self._msgs = BoxLayout(orientation="vertical", size_hint=(1, None), spacing=dp(2))
         self._msgs.bind(minimum_height=self._msgs.setter("height"))
-        # While streaming, keep the view pinned to the latest token without animations.
-        self._msgs.bind(height=lambda *_: self._on_msgs_height_changed())
+        self._msgs.bind(height=lambda *_: self._scroll_to_bottom())
         self._scroll.add_widget(self._msgs)
+        paint_background(self._scroll, Theme.BG)
         root.add_widget(self._scroll)
 
-        # Welcome message - text updated when model is ready
-        self._welcome = self._add_msg(
-            "Hello! I'm your offline AI assistant.\n\n"
-            "[b]Downloading AI models (first launch only)...[/b]",
+        self._add_msg(
+            "[b]Welcome to O-RAG.[/b]\nChoose [b]General Chat[/b] for standard conversation or [b]Document Q&A[/b] for grounded answers.",
             role="assistant",
         )
 
-        # Input area (attachment strip + bar)
-        input_area = BoxLayout(
+        input_zone = SurfaceCard(
+            radius=Radius.MD,
+            color=Theme.SURFACE,
             orientation="vertical",
-            size_hint=(1, None), height=dp(74),
+            size_hint=(1, None),
+            height=dp(86),
+            spacing=0,
         )
-        _paint(input_area, _HDR_BG)
 
-        # Attachment preview strip - hidden until a file is picked
         self._attach_strip = BoxLayout(
             orientation="horizontal",
-            size_hint=(1, None), height=0,
-            padding=[dp(10), dp(6), dp(10), dp(0)],
+            size_hint=(1, None),
+            height=0,
+            padding=[Space.SM, Space.XS, Space.SM, 0],
         )
-        _paint(self._attach_strip, _HDR_BG)
-        input_area.add_widget(self._attach_strip)
+        input_zone.add_widget(self._attach_strip)
 
-        bar = BoxLayout(
-            size_hint=(1, None), height=dp(74),
-            padding=[dp(10), dp(8), dp(10), dp(8)],
-            spacing=dp(8),
+        input_row = BoxLayout(
+            orientation="horizontal",
+            size_hint=(1, None),
+            height=dp(78),
+            padding=[Space.SM, Space.SM, Space.SM, Space.SM],
+            spacing=Space.SM,
         )
 
-        # [+] attach button
-        add_btn = Button(
+        attach_btn = PillButton(
             text="+",
-            font_size=sp(26), bold=True,
-            size_hint=(None, None), size=(dp(48), dp(48)),
-            background_normal="", background_color=(0, 0, 0, 0),
-            color=_WHITE,
+            bg_color=Theme.SURFACE_ALT,
+            size_hint=(None, None),
+            size=(MIN_TOUCH, MIN_TOUCH),
+            font_size=TypeScale.XL,
         )
-        _paint(add_btn, _ADD_BG, radius=24)
-        add_btn.bind(on_release=self._on_attach)
-        bar.add_widget(add_btn)
+        attach_btn.bind(on_release=self._on_attach)
+        input_row.add_widget(attach_btn)
 
-        # Text input pill
-        pill = BoxLayout(
-            size_hint=(1, 1),
-            padding=[dp(14), dp(8), dp(52), dp(8)],
+        input_shell = SurfaceCard(
+            radius=Radius.PILL,
+            color=Theme.SURFACE_ALT,
+            orientation="horizontal",
+            size_hint=(1, None),
+            height=MIN_TOUCH,
+            padding=[Space.MD, Space.XS],
+            spacing=Space.SM,
         )
-        _paint(pill, _INPUT_BG, radius=22)
 
         self._input = TextInput(
-            hint_text="Message...",
-            multiline=False, size_hint=(1, 1),
-            font_size=sp(14.5),
-            foreground_color=_WHITE,
-            hint_text_color=_MUTED,
+            hint_text="Type a message...",
+            multiline=False,
+            size_hint=(1, 1),
+            font_size=TypeScale.MD,
+            foreground_color=Theme.TEXT,
+            hint_text_color=Theme.TEXT_MUTED,
             background_color=(0, 0, 0, 0),
-            cursor_color=_WHITE,
-            padding=[0, dp(4)],
+            cursor_color=Theme.TEXT,
         )
         self._input.bind(on_text_validate=self._on_send)
-        pill.add_widget(self._input)
+        input_shell.add_widget(self._input)
 
-        # [>] send button overlaid on pill right
-        send_anc = AnchorLayout(
-            size_hint=(None, 1), width=dp(52),
-            anchor_x="center", anchor_y="center",
+        self._send_btn = PillButton(
+            text=">",
+            bg_color=Theme.PRIMARY,
+            size_hint=(None, None),
+            size=(dp(40), dp(40)),
+            font_size=TypeScale.LG,
         )
-        send_btn = Button(
-            text=">", font_size=sp(20), bold=True,
-            size_hint=(None, None), size=(dp(40), dp(40)),
-            background_normal="", background_color=(0, 0, 0, 0),
-            color=_WHITE,
-        )
-        _paint(send_btn, _GREEN, radius=20)
-        send_btn.bind(on_release=self._on_send)
-        send_anc.add_widget(send_btn)
-        self._send_btn = send_btn   # keep ref so we can dim it while loading
-        send_btn.opacity = 0.4       # dimmed until model is ready
+        self._send_btn.bind(on_release=self._on_send)
+        input_shell.add_widget(self._send_btn)
+        input_row.add_widget(input_shell)
 
-        bar.add_widget(pill)
-        bar.add_widget(send_anc)
-        input_area.add_widget(bar)
-        root.add_widget(input_area)
+        input_zone.add_widget(input_row)
+        root.add_widget(input_zone)
 
         self.add_widget(root)
 
-        # Register model-ready callbacks immediately (before init() fires)
-        # so we never miss the done event due to a timing race.
+        self._set_send_enabled(False)
+        self._set_mode(CHAT_MODE_GENERAL)
         Clock.schedule_once(self._register_pipeline_callbacks, 0)
-
-    # ---------------------------------------------------------------- #
-    #  Model progress / ready callbacks                                 #
-    # ---------------------------------------------------------------- #
 
     def _register_pipeline_callbacks(self, *_):
         self._controller.register_bootstrap_callbacks(
             on_progress=self._on_model_progress,
-            on_done    =self._on_model_ready,
+            on_done=self._on_model_ready,
         )
+        try:
+            event = self._controller.get_bootstrap_state()
+            if event.state == BootstrapState.DOWNLOADING:
+                self._on_model_progress(event.progress, event.message)
+            elif event.state == BootstrapState.READY:
+                self._on_model_ready(True, event.message)
+            elif event.state == BootstrapState.ERROR:
+                self._on_model_ready(False, event.message)
+        except Exception:
+            pass
 
     @mainthread
     def _on_model_progress(self, frac: float, text: str):
-        # Determine which stage we are in based on the progress text
-        txt_lo = text.lower()
-        if "offline ready" in txt_lo or "cached" in txt_lo:
-            stage = "[b]Offline ready[/b]"
-        elif "start" in txt_lo or "engine" in txt_lo or "loading model" in txt_lo:
-            stage = "[b]Starting AI engine...[/b]"
-        elif "connect" in txt_lo or "hugging" in txt_lo or "download" in txt_lo or "/" in text:
-            stage = "[b]Downloading AI models (first launch only)...[/b]"
-        else:
-            stage = "[b]Preparing AI models...[/b]"
-
-        pct    = int(min(frac, 0.999) * 100)
-
-        # Throttle expensive label re-rendering to keep UI responsive
-        # during long downloads on slower Android devices.
+        pct = int(min(max(frac, 0.0), 0.999) * 100)
         now = time.monotonic()
-        stage_changed = stage != self._last_model_stage
-        pct_changed = pct != self._last_model_pct
-        must_render = (
-            stage_changed
-            or pct_changed
-            or pct >= 99
-            or (now - self._last_model_update_at) >= 0.75
-        )
-        if not must_render:
+        if pct == self._last_model_pct and (now - self._last_model_update_at) < 0.7:
             return
-
-        self._last_model_stage = stage
         self._last_model_pct = pct
         self._last_model_update_at = now
 
-        filled = "#" * (pct // 10)
-        empty  = "-" * (10 - pct // 10)
-        bar    = f"[color=19c37d]{filled}[/color][color=555555]{empty}[/color]"
+        txt = text.lower()
+        if "download" in txt or "hugging" in txt:
+            stage = "Downloading"
+        elif "loading" in txt or "start" in txt or "engine" in txt:
+            stage = "Starting"
+        else:
+            stage = "Preparing"
 
-        self._welcome._lbl.text = (
-            f"{stage}\n\n"
-            f"[size=13sp]{bar}  {pct}%[/size]\n"
-            f"[size=12sp][color=aaaaaa]{text}[/color][/size]"
-        )
+        self._engine_state.text = f"[b]ENGINE:[/b] {stage}"
+        self._engine_state.color = Theme.WARNING
+        self._engine_title.text = f"Bootstrapping offline AI ({pct}%)"
+        self._engine_detail.text = text or "Preparing local runtime"
 
     @mainthread
     def _on_model_ready(self, success: bool, message: str):
         if success:
             self._model_ready = True
-            # Restore send button to full opacity
-            if self._send_btn:
-                self._send_btn.color = _WHITE
-                self._send_btn.opacity = 1.0
-            self._welcome._lbl.text = (
-                "[b]Offline ready. How can I assist you today?[/b]\n\n"
-                "- Just type a message to chat with me.\n"
-                "- Tap [b]+[/b] to attach a [b]PDF[/b] or [b]TXT[/b] - "
-                "I'll answer questions about its content."
-            )
-            # Keep the model-ready callback lightweight to reduce ANR risk.
-            Clock.schedule_once(lambda *_: self._start_android_service_once(), 0.05)
+            self._set_send_enabled(True)
+            self._engine_state.text = "[b]ENGINE:[/b] Ready"
+            self._engine_state.color = Theme.SUCCESS
+            self._engine_title.text = "Offline model is ready"
+            self._engine_detail.text = "You can chat now, or ask from indexed documents."
+            Clock.schedule_once(lambda *_: self._controller.start_service_once(), 0.05)
         else:
             self._model_ready = False
-            self._welcome._lbl.text = (
-                f"[color=ff5555]Model failed to load:[/color]\n{message}\n\n"
-                "Network is required only for first-time setup. Check your connection and retry."
-            )
+            self._set_send_enabled(False)
+            self._engine_state.text = "[b]ENGINE:[/b] Error"
+            self._engine_state.color = Theme.DANGER
+            self._engine_title.text = "Model startup failed"
+            self._engine_detail.text = message or "Check first-run download connectivity and retry."
 
-    # ---------------------------------------------------------------- #
-    #  Storage permission request                                       #
-    # ---------------------------------------------------------------- #
+    def _set_send_enabled(self, enabled: bool) -> None:
+        self._send_btn.disabled = not enabled
+        self._send_btn.opacity = 1.0 if enabled else 0.45
 
-    def _request_storage_permissions(self, *_):
-        """Ask for storage permissions on Android before opening picker."""
-        import os
-        if not os.environ.get("ANDROID_PRIVATE"):
-            return  # desktop - no-op
-        if self._perm_requested:
-            return
-        self._perm_requested = True
-        try:
-            from android.permissions import request_permissions, Permission  # type: ignore
-            sdk = 0
-            try:
-                from jnius import autoclass  # type: ignore
-                sdk = autoclass("android.os.Build$VERSION").SDK_INT
-            except Exception:
-                pass
-            if sdk >= 33:
-                # Android 13+ - READ_MEDIA_IMAGES covers images;
-                # documents/PDFs still come through SAF so no extra perm needed.
-                request_permissions([
-                    Permission.READ_MEDIA_IMAGES,
-                    Permission.READ_MEDIA_VIDEO,
-                ])
-            else:
-                request_permissions([
-                    Permission.READ_EXTERNAL_STORAGE,
-                    Permission.WRITE_EXTERNAL_STORAGE,
-                ])
-        except Exception as e:
-            print(f"[permissions] Could not request: {e}")
+    def _set_mode(self, mode: str) -> None:
+        self._selected_mode = CHAT_MODE_DOCUMENT if mode == CHAT_MODE_DOCUMENT else CHAT_MODE_GENERAL
 
-    def _start_android_service_once(self):
-        """Start Android foreground service only after models are ready."""
-        if self._controller.start_service_once():
-            print("[chat] Android foreground service started.")
+        if self._selected_mode == CHAT_MODE_GENERAL:
+            self._btn_general.set_bg(Theme.PRIMARY)
+            self._btn_document.set_bg(Theme.SURFACE_ALT)
         else:
-            print("[chat] Service start skipped.")
+            self._btn_general.set_bg(Theme.SURFACE_ALT)
+            self._btn_document.set_bg(Theme.PRIMARY)
 
-    # ---------------------------------------------------------------- #
-    #  Attach document via file picker                                  #
-    # ---------------------------------------------------------------- #
+        self._refresh_document_inventory()
 
-    # Unique request code for startActivityForResult
-    _PICK_REQ = 0x4F52   # "OR"
+    def _refresh_document_inventory(self) -> None:
+        docs = self._safe_list_documents()
+        self._doc_count = len(docs)
+
+        mode_name = mode_title(self._selected_mode)
+        self._mode_caption.text = f"Mode: {mode_name}  |  Indexed docs: {self._doc_count}"
+
+        if self._selected_mode == CHAT_MODE_DOCUMENT and self._doc_count == 0:
+            self._docs_notice.height = dp(58)
+        else:
+            self._docs_notice.height = 0
+
+    def _safe_list_documents(self) -> list[dict]:
+        try:
+            return self._controller.list_documents()
+        except Exception:
+            return []
+
+    def _go_to_docs(self):
+        if callable(self._open_docs_tab):
+            self._open_docs_tab()
+
+    def _show_typing(self):
+        self._typing = TypingIndicator()
+        self._msgs.add_widget(self._typing)
+        self._scroll_to_bottom()
+
+    def _hide_typing(self):
+        if self._typing:
+            self._typing.stop()
+            self._msgs.remove_widget(self._typing)
+            self._typing = None
+
+    def _add_msg(self, text: str, role: str = "assistant") -> RoleBubble:
+        row = RoleBubble(text=text, role=role)
+        self._msgs.add_widget(row)
+        Clock.schedule_once(lambda *_: self._scroll_to_bottom(), 0)
+        return row
+
+    def _scroll_to_bottom(self, *_):
+        self._scroll.scroll_y = 0
 
     def _on_attach(self, *_):
-        # Guard: prevent double-open if picker is already visible
-        if getattr(self, "_picker_open", False):
+        if self._picker_open:
             return
         self._picker_open = True
+
         import os
+
         if os.environ.get("ANDROID_PRIVATE"):
-            # On-demand permission request instead of model-ready prompt.
             self._request_storage_permissions()
             self._android_pick_file()
         else:
             self._desktop_pick_file()
 
-    # -- Android path: native startActivityForResult ------------------
+    def _request_storage_permissions(self):
+        import os
+
+        if not os.environ.get("ANDROID_PRIVATE") or self._perm_requested:
+            return
+        self._perm_requested = True
+        try:
+            from android.permissions import Permission, request_permissions  # type: ignore
+
+            request_permissions(
+                [
+                    Permission.READ_EXTERNAL_STORAGE,
+                    Permission.WRITE_EXTERNAL_STORAGE,
+                    Permission.READ_MEDIA_IMAGES,
+                    Permission.READ_MEDIA_VIDEO,
+                ]
+            )
+        except Exception:
+            pass
 
     def _android_pick_file(self):
         try:
-            from jnius import autoclass          # type: ignore
             from android.activity import bind as activity_bind  # type: ignore
+            from jnius import autoclass  # type: ignore
 
-            # Register result handler before launching intent
             activity_bind(on_activity_result=self._on_activity_result)
-
             PythonActivity = autoclass("org.kivy.android.PythonActivity")
-            Intent         = autoclass("android.content.Intent")
+            Intent = autoclass("android.content.Intent")
 
             intent = Intent(Intent.ACTION_GET_CONTENT)
-            intent.setType("*/*")               # show all; filtered by MIME below
+            intent.setType("*/*")
             intent.addCategory(Intent.CATEGORY_OPENABLE)
 
-            # Restrict picker to PDF + plain-text via EXTRA_MIME_TYPES
             try:
                 ArrayList = autoclass("java.util.ArrayList")
                 mimes = ArrayList()
                 mimes.add("application/pdf")
                 mimes.add("text/plain")
-                intent.putExtra("android.intent.extra.MIME_TYPES",
-                                mimes.toArray())
+                intent.putExtra("android.intent.extra.MIME_TYPES", mimes.toArray())
             except Exception:
-                # Fallback: accept everything; resolve_uri will validate ext
                 pass
 
-            PythonActivity.mActivity.startActivityForResult(
-                intent, self._PICK_REQ
-            )
-        except Exception as e:
-            import traceback; traceback.print_exc()
+            PythonActivity.mActivity.startActivityForResult(intent, self._PICK_REQ)
+        except Exception as exc:
             self._picker_open = False
-            self._add_msg(
-                f"[color=ff5555]Could not open file picker:[/color]\n{e}",
-                role="assistant",
-            )
+            self._add_msg(f"[color=ff7777]Could not open picker:[/color] {escape_markup(str(exc))}")
 
     def _on_activity_result(self, request_code, result_code, data):
-        # Unregister immediately so we don't receive stale callbacks
         try:
             from android.activity import unbind as activity_unbind  # type: ignore
+
             activity_unbind(on_activity_result=self._on_activity_result)
         except Exception:
             pass
 
         self._picker_open = False
-
-        if request_code != self._PICK_REQ:
-            return
-        RESULT_OK = -1   # android.app.Activity.RESULT_OK
-        if result_code != RESULT_OK or data is None:
+        if request_code != self._PICK_REQ or result_code != -1 or data is None:
             return
 
         try:
             uri = data.getData()
-            if uri is None:
-                return
-            uri_str = uri.toString()
-            Clock.schedule_once(lambda *_: self._process_picked_uri(uri_str), 0)
-        except Exception as e:
-            import traceback; traceback.print_exc()
-            self._add_msg(
-                f"[color=ff5555]Could not read file URI:[/color]\n{e}",
-                role="assistant",
-            )
+            if uri is not None:
+                Clock.schedule_once(lambda *_: self._process_picked_uri(uri.toString()), 0)
+        except Exception as exc:
+            self._add_msg(f"[color=ff7777]Could not read URI:[/color] {escape_markup(str(exc))}")
 
     @mainthread
     def _process_picked_uri(self, uri_str: str):
         try:
             from app.rag.chunker import resolve_uri
-            path = resolve_uri(uri_str)
-            self._stage_attachment(path)
-        except Exception as e:
-            import traceback; traceback.print_exc()
-            self._add_msg(
-                f"[color=ff5555]Could not open file:[/color]\n{e}",
-                role="assistant",
-            )
 
-    # -- Desktop path: plyer fallback ---------------------------------
+            self._stage_attachment(resolve_uri(uri_str))
+        except Exception as exc:
+            self._add_msg(f"[color=ff7777]Could not open file:[/color] {escape_markup(str(exc))}")
 
     def _desktop_pick_file(self):
         try:
             from plyer import filechooser
+
             filechooser.open_file(
                 on_selection=self._on_file_chosen,
                 filters=[["Documents", "*.pdf", "*.txt", "*.PDF", "*.TXT"]],
-                title="Pick a document",
+                title="Choose document",
                 multiple=False,
             )
-        except Exception as e:
+        except Exception:
             self._picker_open = False
-            self._add_msg(
-                "File picker unavailable on this device.\n"
-                "Type the [b]full path[/b] to your file and send it - "
-                f"e.g. [i]/sdcard/Download/report.pdf[/i]",
-                role="assistant",
-            )
+            self._add_msg("File picker unavailable. Paste a full file path and send.")
 
     @mainthread
     def _on_file_chosen(self, selection):
@@ -762,188 +734,124 @@ class ChatScreen(Screen):
             return
         try:
             from app.rag.chunker import resolve_uri
-            path = resolve_uri(selection[0])
-            self._stage_attachment(path)
-        except Exception as e:
-            import traceback; traceback.print_exc()
-            self._add_msg(
-                f"[color=ff5555]Could not open file:[/color]\n{e}",
-                role="assistant",
-            )
+
+            self._stage_attachment(resolve_uri(selection[0]))
+        except Exception as exc:
+            self._add_msg(f"[color=ff7777]Could not open file:[/color] {escape_markup(str(exc))}")
 
     def _stage_attachment(self, path: str):
-        """Show the attachment preview card above the input bar."""
-        import os
         self._pending_attach = path
-
-        # Remove any existing card
         self._attach_strip.clear_widgets()
-
-        card = AttachmentPreviewCard(
-            filepath=path,
-            on_remove=self._remove_attachment,
-        )
-        self._attach_card = card
-        self._attach_strip.add_widget(card)
-
-        # Expand the strip to show the card
-        self._attach_strip.height = dp(80)
-        # Grow the whole input_area
-        self._attach_strip.parent.height = dp(154)
+        self._attach_strip.add_widget(AttachmentPreviewCard(path, on_remove=self._clear_attachment))
+        self._attach_strip.height = dp(78)
+        self._attach_strip.parent.height = dp(158)
 
     @mainthread
-    def _remove_attachment(self):
-        """Dismiss the staged attachment card."""
+    def _clear_attachment(self):
         self._pending_attach = None
-        self._attach_card    = None
         self._attach_strip.clear_widgets()
         self._attach_strip.height = 0
-        self._attach_strip.parent.height = dp(74)
+        self._attach_strip.parent.height = dp(86)
 
-    def _start_ingest(self, path: str, fname: str):
-        card = DocStatusCard(fname)
-        self._msgs.add_widget(card)
-        self._scroll_down()
-        self._controller.ingest_document(
-            path,
-            on_done=lambda ok, msg: self._ingest_done(card, ok, msg, fname),
-        )
-
-    @mainthread
-    def _ingest_done(self, card: DocStatusCard, ok: bool, msg: str, fname: str = ""):
-        card.set_done(ok, msg)
-        if ok:
-            self._has_docs = True
-            self._rag_doc_name = fname
-            safe_name = escape_markup(fname)
-            self._add_msg(
-                f"[b]RAG mode active[/b] - {safe_name}\n"
-                "I'll answer all your questions using this document.\n"
-                "[color=888888][size=12sp]"
-                "Type [b]quit rag[/b] to return to normal chat."
-                "[/size][/color]",
-                role="assistant",
-            )
-        else:
-            self._add_msg(
-                f"[color=ff5555]Could not load document:[/color]\n{msg}",
-                role="assistant",
-            )
-        self._scroll_down()
-
-    # ---------------------------------------------------------------- #
-    #  Handle plain file-path typed into chat                           #
-    # ---------------------------------------------------------------- #
-
-    def _maybe_load_path(self, text: str) -> bool:
-        """If user pastes a file path, stage it as an attachment."""
-        import os
+    def _maybe_stage_plain_path(self, text: str) -> bool:
         s = text.strip()
-        is_path = (s.startswith("/") or (len(s) > 2 and s[1] == ":")) \
-                  and os.path.isfile(s)
+        if not s:
+            return False
+        is_path = (s.startswith("/") or (len(s) > 2 and s[1] == ":")) and Path(s).is_file()
         if is_path:
             self._stage_attachment(s)
             return True
         return False
 
-    # ---------------------------------------------------------------- #
-    #  Send / receive                                                   #
-    # ---------------------------------------------------------------- #
-
     def _on_send(self, *_):
-        q    = self._input.text.strip()
-        path = self._pending_attach
+        q = self._input.text.strip()
+        attach = self._pending_attach
 
-        # Nothing to do if both empty
-        if not q and not path:
+        if not q and not attach:
             return
 
-        # Avoid overlapping requests while a streamed response is active.
-        if self._streaming_active and not path:
-            self._add_msg(
-                "[color=bbbbbb]Please wait for the current response to finish.[/color]",
-                role="assistant",
-            )
-            return
-
-        # "quit rag" command - exit RAG mode and reset docs
-        if q.lower() in ("quit rag", "exit rag", "/quit rag", "/exit rag"):
+        if is_quit_rag_alias(q):
             self._input.text = ""
+            self._set_mode(CHAT_MODE_GENERAL)
             self._add_msg(escape_markup(q), role="user")
-            if self._has_docs:
-                self._controller.clear_documents()
-                self._has_docs     = False
-                doc = escape_markup(self._rag_doc_name)
-                self._rag_doc_name = ""
-                self._add_msg(
-                    f"[b]RAG mode off[/b] - {doc} removed.\n"
-                    "Back to normal chat. Your conversation history is preserved.",
-                    role="assistant",
-                )
-            else:
-                self._add_msg(
-                    "Not in RAG mode. Upload a PDF or TXT to activate it.",
-                    role="assistant",
-                )
+            self._add_msg("Switched to General Chat mode.", role="assistant")
             return
 
-        # Block sends until the LLM is ready
+        if attach:
+            self._input.text = ""
+            self._clear_attachment()
+            file_name = Path(attach).name
+            bubble = f"[b]{escape_markup(file_name)}[/b]"
+            if q:
+                bubble += f"\n{escape_markup(q)}"
+            self._add_msg(bubble, role="user")
+            self._start_ingest(attach, file_name)
+            return
+
+        if self._maybe_stage_plain_path(q):
+            self._input.text = ""
+            return
+
+        if self._streaming_active:
+            self._add_msg("Please wait for the current response to finish.")
+            return
+
         if not self._model_ready:
-            self._add_msg(
-                "[b]AI engine is still starting up...[/b]\n"
-                "[color=888888][size=12sp]"
-                "You can watch the progress in the welcome panel above. "
-                "Please send your message once it's ready."
-                "[/size][/color]",
-                role="assistant",
-            )
+            self._add_msg("AI engine is still starting. Please wait for the ready state.")
+            return
+
+        self._refresh_document_inventory()
+        mode, can_send, reason = resolve_send_mode(self._selected_mode, self._doc_count > 0)
+        if not can_send:
+            self._add_msg(reason)
             return
 
         self._input.text = ""
-
-        # If there is a staged file, ingest it first
-        if path:
-            import os
-            fname = os.path.basename(path)
-            self._remove_attachment()
-            # Show a user bubble with the attachment + any typed text
-            bubble_text = f"[b]{escape_markup(fname)}[/b]"
-            if q:
-                bubble_text += f"\n{escape_markup(q)}"
-            self._add_msg(bubble_text, role="user")
-            self._start_ingest(path, fname)
-            return
-
-        # Plain text path typed into the input box
-        if self._maybe_load_path(q):
-            return
-
         self._pending_q = q
         self._streaming_active = True
+        self._active_response_mode = mode
         self._add_msg(escape_markup(q), role="user")
-        # Reset token buffer for new response
+        self._show_typing()
+
         self._token_buf.clear()
         if self._token_flush_ev is not None:
             Clock.unschedule(self._token_flush_ev)
             self._token_flush_ev = None
-        self._show_typing()
 
-        if self._has_docs:
+        if mode == CHAT_MODE_DOCUMENT:
             self._controller.ask(q, stream_cb=self._on_token, on_done=self._on_done)
         else:
             self._controller.chat_direct(
                 q,
-                history  =list(self._history),
-                summary  =self._history_summary,
+                history=list(self._history),
+                summary=self._history_summary,
                 stream_cb=self._on_token,
-                on_done  =self._on_done,
+                on_done=self._on_done,
             )
 
+    def _start_ingest(self, path: str, file_name: str):
+        card = IngestStatusCard(file_name)
+        self._msgs.add_widget(card)
+        card.set_stage("queued", "Waiting to start")
+        self._scroll_to_bottom()
+
+        def _done(ok: bool, msg: str):
+            self._ingest_done(card, ok, msg)
+
+        card.set_stage("ingesting", "Parsing and indexing")
+        self._controller.ingest_document(path, on_done=_done)
+
+    @mainthread
+    def _ingest_done(self, card: IngestStatusCard, ok: bool, msg: str):
+        card.set_done(ok, msg)
+        self._refresh_document_inventory()
+        if ok:
+            self._add_msg("Document indexed. Switch to Document Q&A mode to ground answers.")
+        else:
+            self._add_msg(f"[color=ff7777]Document ingest failed:[/color] {escape_markup(msg)}")
+        self._scroll_to_bottom()
+
     def _on_token(self, token: str):
-        """Called from background thread for every streamed token.
-        Buffers tokens and flushes to UI every 80 ms to reduce
-        mainthread event overhead (~200 tokens -> ~10 flushes).
-        """
         self._token_buf.append(token)
         if self._token_flush_ev is None:
             self._token_flush_ev = Clock.schedule_once(self._flush_tokens, 0.12)
@@ -955,99 +863,54 @@ class ChatScreen(Screen):
             return
         batch = "".join(self._token_buf)
         self._token_buf.clear()
+
         if self._typing:
             self._hide_typing()
             self._current_row = self._add_msg("", role="assistant")
+
         if self._current_row:
             self._current_row.append(batch)
-            self._scroll_to_bottom_instant()
+            self._scroll_to_bottom()
 
     @mainthread
     def _on_done(self, success: bool, message: str):
-        # Flush any remaining buffered tokens first
         if self._token_buf:
             batch = "".join(self._token_buf)
             self._token_buf.clear()
-            if self._token_flush_ev is not None:
-                Clock.unschedule(self._token_flush_ev)
-                self._token_flush_ev = None
             if self._typing:
                 self._hide_typing()
                 self._current_row = self._add_msg("", role="assistant")
             if self._current_row:
                 self._current_row.append(batch)
+
         self._hide_typing()
+
         if success:
-            if not self._has_docs and self._pending_q and self._current_row:
-                # Strip Kivy markup tags before storing in history so the
-                # raw text is sent to the model (markup tokens corrupt prompts)
+            if self._active_response_mode == CHAT_MODE_GENERAL and self._pending_q and self._current_row:
                 import re
-                raw_ans = re.sub(r'\[/?[a-zA-Z][^\]]*\]', '',
-                                 self._current_row._lbl.text).strip()
-                self._history.append((self._pending_q, raw_ans))
-                # Keep last 3 turns verbatim; compress older ones into a
-                # one-line summary (no LLM call - just first sentence of reply).
+
+                raw_answer = re.sub(r"\[/?[a-zA-Z][^\]]*\]", "", self._current_row._label.text).strip()
+                self._history.append((self._pending_q, raw_answer))
                 if len(self._history) > 6:
-                    old = self._history[:-3]          # turns to compress
-                    keep = self._history[-3:]         # most recent 3 verbatim
-                    for _q, _a in old:
-                        first_sent = _a.split(".")[0].strip()[:120]
-                        if first_sent:
-                            self._history_summary += f"- {_q}: {first_sent}.\n"
-                    self._history = keep
+                    older = self._history[:-3]
+                    self._history = self._history[-3:]
+                    for old_q, old_a in older:
+                        first_sentence = old_a.split(".")[0].strip()[:120]
+                        if first_sentence:
+                            self._history_summary += f"- {old_q}: {first_sentence}.\n"
         else:
             if self._current_row:
-                self._current_row._lbl.text = (
-                    f"[color=ff5555]{message}[/color]"
-                )
+                self._current_row._label.text = f"[color=ff7777]{escape_markup(message)}[/color]"
             else:
-                self._add_msg(message, role="assistant")
+                self._add_msg(f"[color=ff7777]{escape_markup(message)}[/color]")
+
         self._streaming_active = False
-        self._scroll_down()
-        self._pending_q   = ""
+        self._pending_q = ""
+        self._active_response_mode = CHAT_MODE_GENERAL
         self._current_row = None
+        self._scroll_to_bottom()
 
-    # ---------------------------------------------------------------- #
-    #  Helpers                                                          #
-    # ---------------------------------------------------------------- #
 
-    def _add_msg(self, text: str, role: str = "assistant") -> MessageRow:
-        row = MessageRow(text, role=role)
-        self._msgs.add_widget(row)
-        if self._streaming_active:
-            Clock.schedule_once(lambda *_: self._scroll_to_bottom_instant(), 0.0)
-        else:
-            Clock.schedule_once(lambda *_: self._scroll_down(), 0.05)
-        return row
 
-    def _show_typing(self):
-        self._typing = _TypingIndicator()
-        self._msgs.add_widget(self._typing)
-        if self._streaming_active:
-            Clock.schedule_once(lambda *_: self._scroll_to_bottom_instant(), 0.0)
-        else:
-            Clock.schedule_once(lambda *_: self._scroll_down(), 0.05)
 
-    def _hide_typing(self):
-        if self._typing:
-            self._typing.stop()
-            self._msgs.remove_widget(self._typing)
-            self._typing = None
 
-    def _do_scroll(self, *_):
-        """Debounced scroll during streaming (snap to bottom, no animation)."""
-        self._scroll_pending = False
-        self._scroll_to_bottom_instant()
-
-    def _on_msgs_height_changed(self):
-        if self._streaming_active:
-            self._scroll_to_bottom_instant()
-
-    def _scroll_to_bottom_instant(self):
-        Animation.stop_all(self._scroll, "scroll_y")
-        self._scroll.scroll_y = 0
-
-    def _scroll_down(self):
-        """Smoothly animate to bottom of chat."""
-        Animation.stop_all(self._scroll, "scroll_y")
-        Animation(scroll_y=0, duration=0.15, t="out_quad").start(self._scroll)

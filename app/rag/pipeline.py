@@ -1,4 +1,4 @@
-﻿"""
+"""
 pipeline.py - Orchestrates document ingest, retrieval and generation.
 """
 from __future__ import annotations
@@ -18,10 +18,12 @@ from .downloader import NOMIC_MODEL, QWEN_MODEL, auto_download_default, model_de
 from .llm import build_direct_prompt, build_rag_prompt
 from .retriever import HybridRetriever
 from .storage import (
+    delete_document as storage_delete_document,
     get_conn,
     init_db,
     insert_chunks,
     insert_document,
+    list_documents as storage_list_documents,
     update_doc_chunk_count,
 )
 
@@ -190,6 +192,22 @@ def clear_all_documents() -> None:
 
 def is_model_loaded() -> bool:
     return runtime.is_loaded()
+
+
+def get_bootstrap_event():
+    """Return the latest bootstrap state snapshot for UI surfaces."""
+    return bootstrap.event()
+
+
+def list_documents() -> list[dict]:
+    """List ingested documents sorted by most recent first."""
+    return storage_list_documents()
+
+
+def delete_document_by_id(doc_id: int) -> None:
+    """Delete a document and refresh the in-memory retriever index."""
+    storage_delete_document(doc_id)
+    retriever.reload()
 
 
 def chat_direct(

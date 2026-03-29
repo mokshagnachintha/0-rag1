@@ -1,4 +1,4 @@
-﻿"""
+"""
 Chat controller: isolates side effects from Kivy chat view.
 """
 from __future__ import annotations
@@ -20,6 +20,9 @@ class ChatController:
     ) -> None:
         actions.register_bootstrap_callbacks(on_progress=on_progress, on_done=on_done)
 
+    def get_bootstrap_state(self):
+        return actions.get_bootstrap_state()
+
     def ingest_document(
         self,
         file_path: str,
@@ -29,6 +32,12 @@ class ChatController:
 
     def clear_documents(self) -> None:
         actions.clear_documents()
+
+    def list_documents(self) -> list[dict]:
+        return actions.list_documents()
+
+    def delete_document(self, doc_id: int) -> None:
+        actions.delete_document(doc_id)
 
     def ask(
         self,

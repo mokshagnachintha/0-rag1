@@ -1,4 +1,4 @@
-﻿"""
+"""
 Action handlers for chat-side effects.
 """
 from __future__ import annotations
@@ -15,12 +15,24 @@ def register_bootstrap_callbacks(
     pipeline.register_auto_download_callbacks(on_progress=on_progress, on_done=on_done)
 
 
+def get_bootstrap_state():
+    return pipeline.get_bootstrap_event()
+
+
 def ingest_document(file_path: str, on_done: Optional[Callable[[bool, str], None]] = None) -> None:
     pipeline.ingest_document(file_path, on_done=on_done)
 
 
 def clear_documents() -> None:
     pipeline.clear_all_documents()
+
+
+def list_documents() -> list[dict]:
+    return pipeline.list_documents()
+
+
+def delete_document(doc_id: int) -> None:
+    pipeline.delete_document_by_id(doc_id)
 
 
 def ask_rag(
