@@ -54,6 +54,7 @@ class PillButton(Button):
         bg_color,
         text_color=Theme.TEXT,
         font_size=TypeScale.SM,
+        radius: float | None = None,
         **kwargs,
     ):
         super().__init__(
@@ -64,7 +65,7 @@ class PillButton(Button):
             background_color=(0, 0, 0, 0),
             **kwargs,
         )
-        self._bg_color_ref, _ = paint_background(self, bg_color, radius=Radius.PILL)
+        self._bg_color_ref, _ = paint_background(self, bg_color, radius=radius or Radius.PILL)
 
     def set_bg(self, color) -> None:
         self._bg_color_ref.rgba = color

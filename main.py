@@ -1,6 +1,10 @@
-"""Offline RAG app entry point with segmented top navigation."""
+"""Offline RAG app entry point with responsive segmented top navigation."""
 
 import os
+import sys
+import threading
+import traceback
+
 os.environ.setdefault("KIVY_LOG_LEVEL", "warning")
 
 from app.config import ENV_FORCE_BOOTSTRAP_DOWNLOAD
@@ -8,32 +12,27 @@ from app.config import ENV_FORCE_BOOTSTRAP_DOWNLOAD
 if not os.environ.get("ANDROID_PRIVATE"):
     os.environ.setdefault(ENV_FORCE_BOOTSTRAP_DOWNLOAD, "1")
 
-from kivy.config import Config
-Config.set("kivy", "window_icon", "assets/app_icon.png")
-
-from kivy.core.window import Window
-Window.softinput_mode = "below_target"
-
 from kivy.app import App
 from kivy.clock import Clock
+from kivy.config import Config
+from kivy.core.window import Window
 from kivy.graphics import Color, Rectangle
-from kivy.metrics import dp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
 from kivy.uix.screenmanager import NoTransition, ScreenManager
 
-import sys
-import threading
-import traceback
-
-sys.path.insert(0, os.path.dirname(__file__))
-
 from app.rag.pipeline import init
 from app.ui.chat.chat_screen import ChatScreen
 from app.ui.docs.docs_screen import DocsScreen
+from app.ui.responsive import current_metrics
 from app.ui.settings.settings_screen import SettingsScreen
-from app.ui.theme import MIN_TOUCH, Radius, Space, Theme, TypeScale
+from app.ui.theme import Theme, TypeScale
 from app.ui.widgets import PillButton, SurfaceCard, bind_label_size, paint_background
+
+Config.set("kivy", "window_icon", "assets/app_icon.png")
+Window.softinput_mode = "below_target"
+
+sys.path.insert(0, os.path.dirname(__file__))
 
 
 def _global_exception_handler(exc_type, exc_value, exc_tb):
@@ -57,40 +56,34 @@ class AppShell(BoxLayout):
         super().__init__(orientation="vertical", **kwargs)
         paint_background(self, Theme.BG)
         self._tabs: dict[str, PillButton] = {}
+        self._metrics = current_metrics()
         self._build_ui()
+        Window.bind(size=self._on_window_size)
 
     def _build_ui(self):
-        top = SurfaceCard(
+        self._top = SurfaceCard(
             radius=0,
             color=Theme.SURFACE,
             orientation="vertical",
             size_hint=(1, None),
-            height=dp(130),
-            padding=[Space.MD, Space.SM],
-            spacing=Space.SM,
         )
 
-        title = Label(
+        self._title = Label(
             text="[b]O-RAG[/b]",
             markup=True,
             color=Theme.TEXT,
-            font_size=TypeScale.XL,
+            font_size=TypeScale.LG,
             halign="left",
             valign="middle",
             size_hint=(1, None),
-            height=dp(28),
         )
-        bind_label_size(title)
-        top.add_widget(title)
+        bind_label_size(self._title)
+        self._top.add_widget(self._title)
 
-        segmented = SurfaceCard(
-            radius=Radius.PILL,
+        self._segmented = SurfaceCard(
             color=Theme.SURFACE_ALT,
             orientation="horizontal",
             size_hint=(1, None),
-            height=MIN_TOUCH + 8,
-            padding=[Space.XS, Space.XS],
-            spacing=Space.XS,
         )
 
         for label, name in (("Chat", "chat"), ("Documents", "docs"), ("Settings", "settings")):
@@ -98,15 +91,14 @@ class AppShell(BoxLayout):
                 text=label,
                 bg_color=Theme.SURFACE_ALT,
                 size_hint=(1, None),
-                height=MIN_TOUCH,
                 font_size=TypeScale.SM,
             )
             btn.bind(on_release=lambda _, target=name: self.switch_tab(target))
-            segmented.add_widget(btn)
+            self._segmented.add_widget(btn)
             self._tabs[name] = btn
 
-        top.add_widget(segmented)
-        self.add_widget(top)
+        self._top.add_widget(self._segmented)
+        self.add_widget(self._top)
 
         self._screens = ScreenManager(transition=NoTransition())
         self._screens.add_widget(ChatScreen(name="chat", open_docs_tab=lambda: self.switch_tab("docs")))
@@ -115,6 +107,32 @@ class AppShell(BoxLayout):
         self.add_widget(self._screens)
 
         self.switch_tab("chat")
+        self._apply_metrics(self._metrics)
+
+    def _apply_metrics(self, metrics):
+        self._metrics = metrics
+        self._top.height = metrics.shell_height
+        self._top.padding = [metrics.screen_pad_h, metrics.gap_sm, metrics.screen_pad_h, metrics.gap_sm]
+        self._top.spacing = metrics.gap_sm
+
+        self._title.height = metrics.shell_title_h
+        self._title.font_size = TypeScale.LG if metrics.size_class == "medium" else TypeScale.MD
+
+        self._segmented.height = metrics.shell_tabs_h
+        self._segmented.padding = [metrics.gap_sm, metrics.gap_sm, metrics.gap_sm, metrics.gap_sm]
+        self._segmented.spacing = metrics.gap_sm
+        self._segmented.set_color(Theme.SURFACE_ALT)
+
+        for btn in self._tabs.values():
+            btn.height = metrics.shell_tab_btn_h
+
+        for screen in self._screens.screens:
+            callback = getattr(screen, "on_responsive_metrics", None)
+            if callable(callback):
+                callback(metrics)
+
+    def _on_window_size(self, *_):
+        self._apply_metrics(current_metrics())
 
     def switch_tab(self, name: str):
         if name not in self._tabs:
@@ -148,13 +166,10 @@ class RAGApp(App):
             bg = Rectangle()
         root.bind(pos=lambda w, _: setattr(bg, "pos", w.pos), size=lambda w, _: setattr(bg, "size", w.size))
 
-        shell = AppShell()
-        root.add_widget(shell)
-
+        root.add_widget(AppShell())
         Clock.schedule_once(self._start_pipeline_init_async, 0.3)
         return root
 
 
 if __name__ == "__main__":
     RAGApp().run()
-

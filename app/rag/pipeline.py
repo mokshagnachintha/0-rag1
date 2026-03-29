@@ -200,14 +200,24 @@ def get_bootstrap_event():
 
 
 def list_documents() -> list[dict]:
-    """List ingested documents sorted by most recent first."""
-    return storage_list_documents()
+    """List ingested documents sorted by most recent first.
+
+    Safe during very early startup before init() has run.
+    """
+    try:
+        init_db()
+        return storage_list_documents()
+    except Exception:
+        return []
 
 
 def delete_document_by_id(doc_id: int) -> None:
     """Delete a document and refresh the in-memory retriever index."""
-    storage_delete_document(doc_id)
-    retriever.reload()
+    try:
+        init_db()
+        storage_delete_document(doc_id)
+    finally:
+        retriever.reload()
 
 
 def chat_direct(
@@ -282,3 +292,4 @@ def ask(
                 on_done(False, f"Error during inference: {exc}")
 
     threading.Thread(target=_run, daemon=True).start()
+

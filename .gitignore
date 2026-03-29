@@ -1,4 +1,4 @@
-
+﻿
 # Large model files
 *.gguf
 *.bin
@@ -6,6 +6,6 @@ model_tmp/
 .buildozer/
 __pycache__/
 *.pyc
-
+.venv
 llamacpp_bin/
 

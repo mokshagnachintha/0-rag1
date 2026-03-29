@@ -1,4 +1,4 @@
-"""Settings screen with engine diagnostics and safe maintenance controls."""
+"""Responsive Settings screen with diagnostics and maintenance controls."""
 from __future__ import annotations
 
 import time
@@ -6,10 +6,12 @@ import time
 from app.rag import pipeline
 from app.runtime.bootstrap import BootstrapState
 from app.ui.chat.controller import ChatController
-from app.ui.theme import MIN_TOUCH, Radius, Space, Theme, TypeScale
+from app.ui.responsive import current_metrics
+from app.ui.theme import Theme, TypeScale
 from app.ui.widgets import PillButton, SurfaceCard, bind_label_size, paint_background
 
 from kivy.clock import Clock, mainthread
+from kivy.core.window import Window
 from kivy.metrics import dp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
@@ -20,26 +22,42 @@ class SettingsScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._controller = ChatController()
+        self._metrics = current_metrics()
         self._confirm_deadline = 0.0
         self._build_ui()
+        Window.bind(size=self._on_window_size)
         Clock.schedule_once(lambda *_: self._register_bootstrap_callbacks(), 0)
 
     def on_pre_enter(self, *_):
         self._refresh_cards()
 
-    def _build_ui(self):
-        root = BoxLayout(orientation="vertical", spacing=Space.SM, padding=[Space.SM, Space.SM, Space.SM, Space.SM])
-        paint_background(root, Theme.BG)
+    def on_responsive_metrics(self, metrics):
+        if metrics.size_class != self._metrics.size_class:
+            self._metrics = metrics
+            self._rebuild_ui()
+        else:
+            self._metrics = metrics
+            self._apply_layout_metrics()
 
-        self._engine_card = SurfaceCard(
-            radius=Radius.LG,
-            color=Theme.SURFACE,
-            orientation="vertical",
-            size_hint=(1, None),
-            height=dp(120),
-            padding=[Space.MD, Space.SM],
-            spacing=dp(2),
-        )
+    def _on_window_size(self, *_):
+        self.on_responsive_metrics(current_metrics())
+
+    def _rebuild_ui(self):
+        self.clear_widgets()
+        self._build_ui()
+        self._refresh_cards()
+
+    def _build_ui(self):
+        m = self._metrics
+        root = BoxLayout(orientation="horizontal" if m.size_class == "medium" else "vertical")
+        paint_background(root, Theme.BG)
+        root.padding = [m.screen_pad_h, m.screen_pad_v, m.screen_pad_h, m.screen_pad_v]
+        root.spacing = m.gap_md
+        self._root = root
+
+        left_col = BoxLayout(orientation="vertical", spacing=m.gap_sm, size_hint=(0.62, 1) if m.size_class == "medium" else (1, 1))
+
+        self._engine_card = SurfaceCard(color=Theme.SURFACE, orientation="vertical", size_hint=(1, None))
         self._engine_state = Label(
             text="[b]Engine:[/b] Unknown",
             markup=True,
@@ -47,7 +65,7 @@ class SettingsScreen(Screen):
             halign="left",
             valign="middle",
             size_hint=(1, None),
-            height=dp(24),
+            height=dp(22),
             font_size=TypeScale.SM,
         )
         bind_label_size(self._engine_state)
@@ -57,8 +75,8 @@ class SettingsScreen(Screen):
             halign="left",
             valign="middle",
             size_hint=(1, None),
-            height=dp(22),
-            font_size=TypeScale.SM,
+            height=dp(18),
+            font_size=TypeScale.XS,
         )
         bind_label_size(self._engine_detail)
         self._engine_hint = Label(
@@ -67,31 +85,23 @@ class SettingsScreen(Screen):
             halign="left",
             valign="middle",
             size_hint=(1, None),
-            height=dp(22),
+            height=dp(18),
             font_size=TypeScale.XS,
         )
         bind_label_size(self._engine_hint)
         self._engine_card.add_widget(self._engine_state)
         self._engine_card.add_widget(self._engine_detail)
         self._engine_card.add_widget(self._engine_hint)
-        root.add_widget(self._engine_card)
+        left_col.add_widget(self._engine_card)
 
-        self._stats_card = SurfaceCard(
-            radius=Radius.LG,
-            color=Theme.SURFACE,
-            orientation="vertical",
-            size_hint=(1, None),
-            height=dp(118),
-            padding=[Space.MD, Space.SM],
-            spacing=dp(2),
-        )
+        self._stats_card = SurfaceCard(color=Theme.SURFACE, orientation="vertical", size_hint=(1, None))
         self._stats_docs = Label(
             text="Indexed docs: 0",
             color=Theme.TEXT,
             halign="left",
             valign="middle",
             size_hint=(1, None),
-            height=dp(24),
+            height=dp(22),
             font_size=TypeScale.SM,
         )
         bind_label_size(self._stats_docs)
@@ -101,7 +111,7 @@ class SettingsScreen(Screen):
             halign="left",
             valign="middle",
             size_hint=(1, None),
-            height=dp(22),
+            height=dp(18),
             font_size=TypeScale.XS,
         )
         bind_label_size(self._stats_chunks)
@@ -111,44 +121,14 @@ class SettingsScreen(Screen):
             halign="left",
             valign="middle",
             size_hint=(1, None),
-            height=dp(22),
+            height=dp(18),
             font_size=TypeScale.XS,
         )
         bind_label_size(self._stats_model)
         self._stats_card.add_widget(self._stats_docs)
         self._stats_card.add_widget(self._stats_chunks)
         self._stats_card.add_widget(self._stats_model)
-        root.add_widget(self._stats_card)
-
-        action_card = SurfaceCard(
-            radius=Radius.LG,
-            color=Theme.SURFACE,
-            orientation="vertical",
-            size_hint=(1, None),
-            height=dp(124),
-            padding=[Space.SM, Space.SM],
-            spacing=Space.SM,
-        )
-        refresh_btn = PillButton(
-            text="Refresh Diagnostics",
-            bg_color=Theme.PRIMARY_DARK,
-            size_hint=(1, None),
-            height=MIN_TOUCH,
-            font_size=TypeScale.SM,
-        )
-        refresh_btn.bind(on_release=lambda *_: self._refresh_cards())
-
-        self._clear_btn = PillButton(
-            text="Clear All Documents",
-            bg_color=Theme.DANGER,
-            size_hint=(1, None),
-            height=MIN_TOUCH,
-            font_size=TypeScale.SM,
-        )
-        self._clear_btn.bind(on_release=self._on_clear_documents)
-        action_card.add_widget(refresh_btn)
-        action_card.add_widget(self._clear_btn)
-        root.add_widget(action_card)
+        left_col.add_widget(self._stats_card)
 
         self._status = Label(
             text="",
@@ -156,13 +136,61 @@ class SettingsScreen(Screen):
             halign="left",
             valign="middle",
             size_hint=(1, None),
-            height=dp(20),
+            height=dp(18),
             font_size=TypeScale.XS,
         )
         bind_label_size(self._status)
-        root.add_widget(self._status)
+        left_col.add_widget(self._status)
+
+        root.add_widget(left_col)
+
+        action_col = BoxLayout(orientation="vertical", size_hint=(0.38, 1) if m.size_class == "medium" else (1, None), spacing=m.gap_sm)
+        self._action_card = SurfaceCard(color=Theme.SURFACE, orientation="vertical", size_hint=(1, None))
+
+        refresh_btn = PillButton(
+            text="Refresh Diagnostics",
+            bg_color=Theme.PRIMARY_DARK,
+            size_hint=(1, None),
+            height=dp(38),
+            font_size=TypeScale.SM,
+            radius=m.control_radius,
+        )
+        refresh_btn.bind(on_release=lambda *_: self._refresh_cards())
+
+        self._clear_btn = PillButton(
+            text="Clear All Documents",
+            bg_color=Theme.DANGER,
+            size_hint=(1, None),
+            height=dp(38),
+            font_size=TypeScale.SM,
+            radius=m.control_radius,
+        )
+        self._clear_btn.bind(on_release=self._on_clear_documents)
+
+        self._action_card.add_widget(refresh_btn)
+        self._action_card.add_widget(self._clear_btn)
+        action_col.add_widget(self._action_card)
+        root.add_widget(action_col)
 
         self.add_widget(root)
+        self._apply_layout_metrics()
+
+    def _apply_layout_metrics(self):
+        m = self._metrics
+        self._root.padding = [m.screen_pad_h, m.screen_pad_v, m.screen_pad_h, m.screen_pad_v]
+        self._root.spacing = m.gap_md
+
+        self._engine_card.height = dp(82)
+        self._engine_card.padding = [m.gap_md, m.gap_sm, m.gap_md, m.gap_sm]
+        self._engine_card.spacing = dp(2)
+
+        self._stats_card.height = dp(76)
+        self._stats_card.padding = [m.gap_md, m.gap_sm, m.gap_md, m.gap_sm]
+        self._stats_card.spacing = dp(2)
+
+        self._action_card.height = dp(92)
+        self._action_card.padding = [m.gap_sm, m.gap_sm, m.gap_sm, m.gap_sm]
+        self._action_card.spacing = m.gap_sm
 
     def _register_bootstrap_callbacks(self):
         self._controller.register_bootstrap_callbacks(
@@ -183,21 +211,27 @@ class SettingsScreen(Screen):
         self._status.text = text
 
     def _refresh_cards(self):
-        docs = self._controller.list_documents()
+        try:
+            docs = self._controller.list_documents()
+        except Exception:
+            docs = []
         chunk_total = sum(int(doc.get("num_chunks", 0)) for doc in docs)
         self._stats_docs.text = f"Indexed docs: {len(docs)}"
         self._stats_chunks.text = f"Indexed chunks: {chunk_total}"
         self._stats_model.text = f"Model loaded: {'yes' if pipeline.is_model_loaded() else 'no'}"
 
-        event = self._controller.get_bootstrap_state()
-        self._apply_bootstrap_state(event.state, event.message)
+        try:
+            event = self._controller.get_bootstrap_state()
+            self._apply_bootstrap_state(event.state, event.message)
+        except Exception:
+            self._apply_bootstrap_state(BootstrapState.IDLE, "")
 
     def _apply_bootstrap_state(self, state, message: str):
         if state == BootstrapState.READY:
             self._engine_state.text = "[b]Engine:[/b] Ready"
             self._engine_state.color = Theme.SUCCESS
             self._engine_detail.text = message or "Local runtime is healthy."
-            self._engine_hint.text = "Document mode and direct chat are both available."
+            self._engine_hint.text = "Chat and docs mode available."
             return
 
         if state == BootstrapState.DOWNLOADING:

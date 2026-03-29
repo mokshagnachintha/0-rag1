@@ -1,16 +1,17 @@
-"""Documents screen with list, ingest, and deletion controls."""
+"""Responsive Documents screen with compact and medium layouts."""
 from __future__ import annotations
 
 from pathlib import Path
 
 from app.ui.chat.controller import ChatController
-from app.ui.theme import MIN_TOUCH, Radius, Space, Theme, TypeScale
+from app.ui.responsive import current_metrics
+from app.ui.theme import Theme, TypeScale
 from app.ui.widgets import PillButton, SurfaceCard, bind_label_size, paint_background
 
 from kivy.clock import mainthread
+from kivy.core.window import Window
 from kivy.metrics import dp
 from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.screenmanager import Screen
 from kivy.uix.scrollview import ScrollView
@@ -18,104 +19,131 @@ from kivy.uix.textinput import TextInput
 
 
 class DocumentRow(SurfaceCard):
-    def __init__(self, doc: dict, on_delete, **kwargs):
-        super().__init__(
-            radius=Radius.MD,
-            color=Theme.SURFACE,
-            orientation="horizontal",
-            size_hint=(1, None),
-            height=dp(70),
-            padding=[Space.MD, Space.SM],
-            spacing=Space.SM,
-            **kwargs,
-        )
+    def __init__(self, doc: dict, on_delete, metrics_getter, **kwargs):
+        self._metrics_getter = metrics_getter
+        super().__init__(orientation="horizontal", size_hint=(1, None), color=Theme.SURFACE, **kwargs)
         self.doc = doc
 
-        details = BoxLayout(orientation="vertical", spacing=dp(2))
-        name = Label(
+        self._details = BoxLayout(orientation="vertical", spacing=dp(2))
+        self._name = Label(
             text=f"[b]{doc['name']}[/b]",
             markup=True,
             color=Theme.TEXT,
             halign="left",
             valign="middle",
             size_hint=(1, None),
-            height=dp(24),
             font_size=TypeScale.SM,
         )
-        bind_label_size(name)
+        bind_label_size(self._name)
 
-        meta = Label(
+        self._meta = Label(
             text=f"{doc['num_chunks']} chunks  |  Added {doc['added_at'][:16]}",
             color=Theme.TEXT_MUTED,
             halign="left",
             valign="middle",
             size_hint=(1, None),
-            height=dp(20),
             font_size=TypeScale.XS,
         )
-        bind_label_size(meta)
+        bind_label_size(self._meta)
 
-        details.add_widget(name)
-        details.add_widget(meta)
-        self.add_widget(details)
+        self._details.add_widget(self._name)
+        self._details.add_widget(self._meta)
+        self.add_widget(self._details)
 
-        delete_btn = PillButton(
+        self._delete_btn = PillButton(
             text="Delete",
             bg_color=Theme.DANGER,
             size_hint=(None, None),
-            size=(dp(82), MIN_TOUCH),
             font_size=TypeScale.XS,
+            radius=dp(10),
         )
-        delete_btn.bind(on_release=lambda *_: on_delete(doc["id"]))
-        self.add_widget(delete_btn)
+        self._delete_btn.bind(on_release=lambda *_: on_delete(doc["id"]))
+        self.add_widget(self._delete_btn)
+        self.apply_metrics()
+
+    def apply_metrics(self):
+        m = self._metrics_getter()
+        self.height = dp(64)
+        self.padding = [m.gap_md, m.gap_sm, m.gap_md, m.gap_sm]
+        self.spacing = m.gap_sm
+        self._name.height = dp(22)
+        self._meta.height = dp(18)
+        self._delete_btn.size = (dp(72), dp(30))
 
 
 class DocsScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._controller = ChatController()
+        self._metrics = current_metrics()
+        self._root = None
+        self._list = None
+        self._summary_meta = None
+        self._status = None
+        self._manual_path = None
         self._build_ui()
+        Window.bind(size=self._on_window_size)
 
     def on_pre_enter(self, *_):
         self._refresh_list()
 
-    def _build_ui(self):
-        root = BoxLayout(orientation="vertical", spacing=Space.SM, padding=[Space.SM, Space.SM, Space.SM, Space.SM])
-        paint_background(root, Theme.BG)
+    def on_responsive_metrics(self, metrics):
+        if metrics.size_class != self._metrics.size_class:
+            self._metrics = metrics
+            self._rebuild_ui()
+        else:
+            self._metrics = metrics
+            self._apply_layout_metrics()
 
-        summary = SurfaceCard(
-            radius=Radius.LG,
+    def _on_window_size(self, *_):
+        self.on_responsive_metrics(current_metrics())
+
+    def _rebuild_ui(self):
+        self.clear_widgets()
+        self._build_ui()
+        self._refresh_list()
+
+    def _build_ui(self):
+        m = self._metrics
+        root = BoxLayout(orientation="horizontal" if m.size_class == "medium" else "vertical")
+        paint_background(root, Theme.BG)
+        root.padding = [m.screen_pad_h, m.screen_pad_v, m.screen_pad_h, m.screen_pad_v]
+        root.spacing = m.gap_md
+        self._root = root
+
+        content_col = BoxLayout(orientation="vertical", spacing=m.gap_sm, size_hint=(0.66, 1) if m.size_class == "medium" else (1, 1))
+
+        self._summary = SurfaceCard(
             color=Theme.SURFACE,
             orientation="vertical",
             size_hint=(1, None),
-            height=dp(88),
-            padding=[Space.MD, Space.SM],
+            padding=[m.gap_md, m.gap_sm, m.gap_md, m.gap_sm],
             spacing=dp(2),
         )
-        self._summary_title = Label(
+        summary_title = Label(
             text="[b]Documents Library[/b]",
             markup=True,
             color=Theme.TEXT,
             halign="left",
             valign="middle",
             size_hint=(1, None),
-            height=dp(24),
-            font_size=TypeScale.LG,
+            height=dp(22),
+            font_size=TypeScale.MD,
         )
-        bind_label_size(self._summary_title)
+        bind_label_size(summary_title)
         self._summary_meta = Label(
             text="No documents indexed yet.",
             color=Theme.TEXT_MUTED,
             halign="left",
             valign="middle",
             size_hint=(1, None),
-            height=dp(22),
-            font_size=TypeScale.SM,
+            height=dp(18),
+            font_size=TypeScale.XS,
         )
         bind_label_size(self._summary_meta)
-        summary.add_widget(self._summary_title)
-        summary.add_widget(self._summary_meta)
-        root.add_widget(summary)
+        self._summary.add_widget(summary_title)
+        self._summary.add_widget(self._summary_meta)
+        content_col.add_widget(self._summary)
 
         self._status = Label(
             text="",
@@ -127,48 +155,53 @@ class DocsScreen(Screen):
             font_size=TypeScale.XS,
         )
         bind_label_size(self._status)
-        root.add_widget(self._status)
+        content_col.add_widget(self._status)
 
         self._scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False)
-        self._list = BoxLayout(
-            orientation="vertical",
-            size_hint=(1, None),
-            spacing=Space.SM,
-            padding=[0, Space.XS, 0, Space.XS],
-        )
+        self._list = BoxLayout(orientation="vertical", size_hint=(1, None), spacing=m.gap_sm, padding=[0, m.gap_sm, 0, m.gap_sm])
         self._list.bind(minimum_height=self._list.setter("height"))
         self._scroll.add_widget(self._list)
-        root.add_widget(self._scroll)
+        content_col.add_widget(self._scroll)
 
+        root.add_widget(content_col)
+
+        self._actions = self._build_actions_panel(size_hint=(0.34, 1) if m.size_class == "medium" else (1, None))
+        if m.size_class == "compact":
+            self._actions.height = dp(120)
+        root.add_widget(self._actions)
+
+        self.add_widget(root)
+        self._apply_layout_metrics()
+
+    def _build_actions_panel(self, size_hint):
+        m = self._metrics
         action_card = SurfaceCard(
-            radius=Radius.LG,
             color=Theme.SURFACE,
             orientation="vertical",
-            size_hint=(1, None),
-            height=dp(142),
-            padding=[Space.SM, Space.SM],
-            spacing=Space.SM,
+            size_hint=size_hint,
+            padding=[m.gap_sm, m.gap_sm, m.gap_sm, m.gap_sm],
+            spacing=m.gap_sm,
         )
         browse_btn = PillButton(
             text="Browse PDF / TXT",
             bg_color=Theme.PRIMARY,
             size_hint=(1, None),
-            height=MIN_TOUCH,
+            height=dp(38),
             font_size=TypeScale.SM,
+            radius=m.control_radius,
         )
         browse_btn.bind(on_release=self._on_browse)
         action_card.add_widget(browse_btn)
 
-        manual = BoxLayout(orientation="horizontal", spacing=Space.SM, size_hint=(1, None), height=MIN_TOUCH)
+        manual_row = BoxLayout(orientation="horizontal", spacing=m.gap_sm, size_hint=(1, None), height=dp(38))
         shell = SurfaceCard(
-            radius=Radius.PILL,
             color=Theme.SURFACE_ALT,
             orientation="horizontal",
             size_hint=(1, 1),
-            padding=[Space.MD, Space.XS],
+            padding=[m.gap_sm, dp(4), m.gap_sm, dp(4)],
         )
         self._manual_path = TextInput(
-            hint_text="Or paste full file path...",
+            hint_text="Paste full file path...",
             multiline=False,
             foreground_color=Theme.TEXT,
             hint_text_color=Theme.TEXT_MUTED,
@@ -183,17 +216,22 @@ class DocsScreen(Screen):
             text="Add",
             bg_color=Theme.PRIMARY_DARK,
             size_hint=(None, None),
-            size=(dp(72), MIN_TOUCH),
+            size=(dp(64), dp(38)),
             font_size=TypeScale.SM,
+            radius=m.control_radius,
         )
         add_btn.bind(on_release=self._on_manual_add)
 
-        manual.add_widget(shell)
-        manual.add_widget(add_btn)
-        action_card.add_widget(manual)
+        manual_row.add_widget(shell)
+        manual_row.add_widget(add_btn)
+        action_card.add_widget(manual_row)
+        return action_card
 
-        root.add_widget(action_card)
-        self.add_widget(root)
+    def _apply_layout_metrics(self):
+        m = self._metrics
+        self._root.padding = [m.screen_pad_h, m.screen_pad_v, m.screen_pad_h, m.screen_pad_v]
+        self._root.spacing = m.gap_md
+        self._summary.height = m.docs_summary_h
 
     def _set_status(self, text: str, tone="muted"):
         color = Theme.TEXT_MUTED
@@ -207,38 +245,40 @@ class DocsScreen(Screen):
         self._status.text = text
 
     def _refresh_list(self):
-        docs = self._controller.list_documents()
-        self._list.clear_widgets()
+        try:
+            docs = self._controller.list_documents()
+        except Exception:
+            docs = []
 
+        self._list.clear_widgets()
         total_chunks = sum(int(d.get("num_chunks", 0)) for d in docs)
-        if docs:
-            self._summary_meta.text = f"{len(docs)} indexed documents  |  {total_chunks} chunks"
-        else:
-            self._summary_meta.text = "No documents indexed yet."
+        self._summary_meta.text = (
+            f"{len(docs)} indexed documents  |  {total_chunks} chunks" if docs else "No documents indexed yet."
+        )
 
         if not docs:
-            empty_card = SurfaceCard(
-                radius=Radius.MD,
+            m = self._metrics
+            empty = SurfaceCard(
                 color=Theme.SURFACE_ALT,
                 orientation="vertical",
                 size_hint=(1, None),
-                height=dp(80),
-                padding=[Space.MD, Space.SM],
+                height=dp(72),
+                padding=[m.gap_md, m.gap_sm, m.gap_md, m.gap_sm],
             )
-            empty_lbl = Label(
-                text="Upload a PDF or TXT to power Document Q&A mode.",
+            lbl = Label(
+                text="Upload a PDF or TXT to power Docs mode.",
                 color=Theme.TEXT_MUTED,
                 halign="left",
                 valign="middle",
                 font_size=TypeScale.SM,
             )
-            bind_label_size(empty_lbl)
-            empty_card.add_widget(empty_lbl)
-            self._list.add_widget(empty_card)
+            bind_label_size(lbl)
+            empty.add_widget(lbl)
+            self._list.add_widget(empty)
             return
 
         for doc in docs:
-            self._list.add_widget(DocumentRow(doc, on_delete=self._on_delete))
+            self._list.add_widget(DocumentRow(doc, on_delete=self._on_delete, metrics_getter=lambda: self._metrics))
 
     def _on_browse(self, *_):
         try:

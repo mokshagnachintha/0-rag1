@@ -1,4 +1,4 @@
-"""Premium chat screen for explicit General Chat and Document Q&A modes."""
+"""Responsive chat screen with compact inline mode toggle."""
 from __future__ import annotations
 
 import time
@@ -13,10 +13,12 @@ from app.ui.chat.mode_logic import (
     mode_title,
     resolve_send_mode,
 )
-from app.ui.theme import MIN_TOUCH, Radius, Space, Theme, TypeScale
+from app.ui.responsive import current_metrics
+from app.ui.theme import Theme, TypeScale
 from app.ui.widgets import PillButton, SurfaceCard, bind_label_size, paint_background
 
 from kivy.clock import Clock, mainthread
+from kivy.core.window import Window
 from kivy.metrics import dp
 from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.boxlayout import BoxLayout
@@ -32,20 +34,15 @@ from kivy.utils import escape_markup
 class RoleBubble(BoxLayout):
     """Single message row with side-aware bubble alignment."""
 
-    def __init__(self, text: str, role: str = "assistant", **kwargs):
-        super().__init__(
-            orientation="horizontal",
-            size_hint=(1, None),
-            padding=[Space.SM, Space.XS, Space.SM, Space.XS],
-            spacing=Space.XS,
-            **kwargs,
-        )
+    def __init__(self, text: str, role: str, metrics_getter, **kwargs):
+        super().__init__(orientation="horizontal", size_hint=(1, None), **kwargs)
         self.role = role
+        self._metrics_getter = metrics_getter
         self._label = Label(
             text=text,
             markup=True,
             size_hint=(None, None),
-            text_size=(dp(220), None),
+            text_size=(dp(180), None),
             halign="left",
             valign="middle",
             color=Theme.TEXT,
@@ -53,63 +50,61 @@ class RoleBubble(BoxLayout):
         )
         self._label.bind(texture_size=self._on_texture)
         self.bind(width=self._on_width)
-        self._build()
 
-    def _build(self) -> None:
-        bubble_color = Theme.USER_BUBBLE if self.role == "user" else Theme.ASSISTANT_BUBBLE
-        bubble = SurfaceCard(
-            radius=Radius.LG,
+        bubble_color = Theme.USER_BUBBLE if role == "user" else Theme.ASSISTANT_BUBBLE
+        self._bubble = SurfaceCard(
             color=bubble_color,
-            size_hint=(None, None),
-            padding=[Space.MD, Space.SM],
             orientation="vertical",
+            size_hint=(None, None),
         )
-        bubble.add_widget(self._label)
-        self._bubble = bubble
+        self._bubble.add_widget(self._label)
 
-        if self.role == "user":
+        if role == "user":
             self.add_widget(Widget(size_hint_x=1))
             self.add_widget(self._role_chip("YOU"))
-            self.add_widget(bubble)
+            self.add_widget(self._bubble)
         else:
-            self.add_widget(bubble)
+            self.add_widget(self._bubble)
             self.add_widget(self._role_chip("AI"))
             self.add_widget(Widget(size_hint_x=1))
 
+        self._apply_metrics()
+
     def _role_chip(self, text: str) -> Widget:
-        holder = AnchorLayout(size_hint=(None, None), size=(dp(36), dp(28)))
-        chip = SurfaceCard(
-            radius=Radius.SM,
-            color=Theme.SURFACE_ALT,
-            size_hint=(None, None),
-            size=(dp(34), dp(24)),
-            padding=[0, 0],
-        )
+        holder = AnchorLayout(size_hint=(None, None), size=(dp(34), dp(26)))
+        chip = SurfaceCard(color=Theme.SURFACE_ALT, size_hint=(None, None), size=(dp(32), dp(22)))
         lbl = Label(text=text, color=Theme.TEXT_MUTED, font_size=TypeScale.XS, bold=True)
         bind_label_size(lbl)
         chip.add_widget(lbl)
         holder.add_widget(chip)
         return holder
 
-    def _on_texture(self, _, texture_size) -> None:
+    def _apply_metrics(self):
+        metrics = self._metrics_getter()
+        self.padding = [metrics.gap_sm, metrics.gap_sm, metrics.gap_sm, metrics.gap_sm]
+        self.spacing = metrics.gap_sm
+        self._bubble.set_color(Theme.USER_BUBBLE if self.role == "user" else Theme.ASSISTANT_BUBBLE)
+
+    def _on_texture(self, _, texture_size):
+        metrics = self._metrics_getter()
         if not hasattr(self, "_bubble"):
             return
-        width = min(texture_size[0] + dp(8), self.width * 0.76)
+        width = min(texture_size[0] + dp(8), self.width * metrics.bubble_ratio)
+        width = max(width, metrics.bubble_min)
         self._label.size = (width, texture_size[1] + dp(4))
-        self._bubble.size = (width + Space.LG * 2, self._label.height + Space.SM * 2)
-        self.height = self._bubble.height + Space.SM
+        self._bubble.size = (width + metrics.gap_md * 2, self._label.height + metrics.gap_sm * 2)
+        self.height = self._bubble.height + metrics.gap_sm
 
     def _on_width(self, *_):
-        max_width = max(dp(160), self.width * 0.72)
+        metrics = self._metrics_getter()
+        max_width = max(metrics.bubble_min, self.width * metrics.bubble_ratio)
         self._label.text_size = (max_width, None)
 
-    def append(self, token: str) -> None:
+    def append(self, token: str):
         self._label.text += escape_markup(token)
 
 
 class IngestStatusCard(SurfaceCard):
-    """Honest ingest stage card; does not imply granular progress."""
-
     _COLORS = {
         "queued": Theme.TEXT_MUTED,
         "ingesting": Theme.WARNING,
@@ -117,79 +112,59 @@ class IngestStatusCard(SurfaceCard):
         "failed": Theme.DANGER,
     }
 
-    def __init__(self, filename: str, **kwargs):
-        super().__init__(
-            radius=Radius.MD,
-            color=Theme.SURFACE,
-            orientation="vertical",
-            size_hint=(1, None),
-            padding=[Space.MD, Space.SM],
-            spacing=Space.XS,
-            **kwargs,
-        )
-        self._file = escape_markup(filename)
+    def __init__(self, filename: str, metrics_getter, **kwargs):
+        self._metrics_getter = metrics_getter
+        super().__init__(orientation="vertical", size_hint=(1, None), **kwargs)
         self._title = Label(
-            text=f"[b]Document:[/b] {self._file}",
+            text=f"[b]Document:[/b] {escape_markup(filename)}",
             markup=True,
             color=Theme.TEXT,
             halign="left",
             valign="middle",
             size_hint=(1, None),
-            height=dp(24),
             font_size=TypeScale.SM,
         )
         bind_label_size(self._title)
         self._stage = Label(
             text="Queued",
-            color=self._COLORS["queued"],
+            color=Theme.TEXT_MUTED,
             halign="left",
             valign="middle",
             size_hint=(1, None),
-            height=dp(22),
-            font_size=TypeScale.SM,
+            font_size=TypeScale.XS,
         )
         bind_label_size(self._stage)
         self.add_widget(self._title)
         self.add_widget(self._stage)
-        self.height = dp(78)
+        self.apply_metrics()
 
-    def set_stage(self, stage: str, detail: str = "") -> None:
-        label = stage.capitalize()
-        if detail:
-            label = f"{label}: {escape_markup(detail)}"
+    def apply_metrics(self):
+        m = self._metrics_getter()
+        self.padding = [m.gap_md, m.gap_sm, m.gap_md, m.gap_sm]
+        self.spacing = dp(2)
+        self.height = dp(62)
+        self._title.height = dp(22)
+        self._stage.height = dp(18)
+
+    def set_stage(self, stage: str, detail: str = ""):
+        text = stage.capitalize() if not detail else f"{stage.capitalize()}: {escape_markup(detail)}"
         self._stage.color = self._COLORS.get(stage, Theme.TEXT_MUTED)
-        self._stage.text = label
+        self._stage.text = text
 
-    def set_done(self, success: bool, message: str) -> None:
-        if success:
-            self.set_stage("indexed", message)
-        else:
-            self.set_stage("failed", message)
+    def set_done(self, success: bool, message: str):
+        self.set_stage("indexed" if success else "failed", message)
 
 
 class AttachmentPreviewCard(SurfaceCard):
-    def __init__(self, filepath: str, on_remove, **kwargs):
-        super().__init__(
-            radius=Radius.MD,
-            color=Theme.SURFACE_ALT,
-            orientation="horizontal",
-            size_hint=(None, None),
-            size=(dp(250), dp(66)),
-            padding=[Space.SM, Space.SM],
-            spacing=Space.SM,
-            **kwargs,
-        )
+    def __init__(self, filepath: str, on_remove, metrics_getter, **kwargs):
+        self._metrics_getter = metrics_getter
+        super().__init__(orientation="horizontal", size_hint=(None, None), **kwargs)
 
         name = Path(filepath).name
         ext = Path(filepath).suffix.upper().replace(".", "") or "FILE"
-        title = name if len(name) <= 28 else f"{name[:25]}..."
+        title = name if len(name) <= 24 else f"{name[:21]}..."
 
-        icon = SurfaceCard(
-            radius=Radius.SM,
-            color=Theme.PRIMARY_DARK,
-            size_hint=(None, None),
-            size=(dp(42), dp(42)),
-        )
+        icon = SurfaceCard(color=Theme.PRIMARY_DARK, size_hint=(None, None), size=(dp(36), dp(36)))
         icon_lbl = Label(text=ext[:4], color=Theme.TEXT, bold=True, font_size=TypeScale.XS)
         bind_label_size(icon_lbl)
         icon.add_widget(icon_lbl)
@@ -204,72 +179,79 @@ class AttachmentPreviewCard(SurfaceCard):
             halign="left",
             valign="middle",
             size_hint=(1, None),
-            height=dp(22),
+            height=dp(20),
         )
         bind_label_size(name_lbl)
-        type_lbl = Label(
+        kind_lbl = Label(
             text=f"{ext} attachment",
             color=Theme.TEXT_MUTED,
             font_size=TypeScale.XS,
             halign="left",
             valign="middle",
             size_hint=(1, None),
-            height=dp(18),
+            height=dp(16),
         )
-        bind_label_size(type_lbl)
+        bind_label_size(kind_lbl)
         info.add_widget(name_lbl)
-        info.add_widget(type_lbl)
+        info.add_widget(kind_lbl)
         self.add_widget(info)
 
         remove_btn = Button(
             text="X",
             size_hint=(None, None),
-            size=(dp(24), dp(24)),
+            size=(dp(22), dp(22)),
             background_normal="",
             background_color=(0, 0, 0, 0),
             color=Theme.TEXT_MUTED,
-            font_size=TypeScale.SM,
+            font_size=TypeScale.XS,
         )
         remove_btn.bind(on_release=lambda *_: on_remove())
         self.add_widget(remove_btn)
+        self.apply_metrics()
+
+    def apply_metrics(self):
+        m = self._metrics_getter()
+        self.padding = [m.gap_sm, m.gap_sm, m.gap_sm, m.gap_sm]
+        self.spacing = m.gap_sm
+        self.size = (dp(220) if m.size_class == "compact" else dp(250), m.attach_strip_h - dp(10))
 
 
 class TypingIndicator(BoxLayout):
-    def __init__(self, **kwargs):
-        super().__init__(
-            orientation="horizontal",
-            spacing=dp(5),
-            size_hint=(1, None),
-            height=dp(28),
-            padding=[Space.MD, 0],
-            **kwargs,
-        )
+    def __init__(self, metrics_getter, **kwargs):
+        super().__init__(orientation="horizontal", size_hint=(1, None), **kwargs)
+        self._metrics_getter = metrics_getter
         self._dots: list[Label] = []
         self._tick = 0
         for _ in range(3):
-            dot = Label(text=".", color=Theme.TEXT_MUTED, font_size=TypeScale.MD, size_hint=(None, 1), width=dp(12))
+            dot = Label(text=".", color=Theme.TEXT_MUTED, font_size=TypeScale.MD, size_hint=(None, 1), width=dp(10))
             self._dots.append(dot)
             self.add_widget(dot)
+        self.apply_metrics()
         Clock.schedule_interval(self._pulse, 0.36)
 
+    def apply_metrics(self):
+        m = self._metrics_getter()
+        self.height = dp(24)
+        self.spacing = dp(4)
+        self.padding = [m.gap_md, 0, m.gap_md, 0]
+
     def _pulse(self, *_):
-        for index, dot in enumerate(self._dots):
-            dot.color = Theme.TEXT if index == self._tick % 3 else Theme.TEXT_MUTED
+        for idx, dot in enumerate(self._dots):
+            dot.color = Theme.TEXT if idx == self._tick % 3 else Theme.TEXT_MUTED
         self._tick += 1
 
-    def stop(self) -> None:
+    def stop(self):
         Clock.unschedule(self._pulse)
 
 
 class ChatScreen(Screen):
-    """Single chat screen with explicit interaction mode and state banners."""
-
     _PICK_REQ = 0x4F52
 
     def __init__(self, open_docs_tab=None, **kwargs):
         super().__init__(**kwargs)
         self._open_docs_tab = open_docs_tab
         self._controller = ChatController()
+        self._metrics = current_metrics()
 
         self._selected_mode = CHAT_MODE_GENERAL
         self._model_ready = False
@@ -289,28 +271,32 @@ class ChatScreen(Screen):
         self._token_buf: list[str] = []
         self._token_flush_ev = None
 
-        self._last_model_stage = ""
         self._last_model_pct = -1
         self._last_model_update_at = 0.0
 
         self._build_ui()
+        Window.bind(size=self._on_window_size)
+
+    def _get_metrics(self):
+        return self._metrics
 
     def on_pre_enter(self, *_):
         self._refresh_document_inventory()
 
-    def _build_ui(self) -> None:
-        root = BoxLayout(orientation="vertical", spacing=Space.SM, padding=[Space.SM, Space.SM, Space.SM, Space.SM])
-        paint_background(root, Theme.BG)
+    def on_responsive_metrics(self, metrics):
+        self._metrics = metrics
+        self._apply_responsive_layout()
 
-        self._engine_card = SurfaceCard(
-            radius=Radius.LG,
-            color=Theme.SURFACE,
-            orientation="vertical",
-            size_hint=(1, None),
-            height=dp(102),
-            padding=[Space.MD, Space.SM],
-            spacing=dp(2),
-        )
+    def _on_window_size(self, *_):
+        self.on_responsive_metrics(current_metrics())
+
+    def _build_ui(self):
+        m = self._metrics
+        root = BoxLayout(orientation="vertical")
+        paint_background(root, Theme.BG)
+        self._root = root
+
+        self._engine_card = SurfaceCard(color=Theme.SURFACE, orientation="vertical", size_hint=(1, None))
         self._engine_state = Label(
             text="[b]ENGINE:[/b] Starting",
             markup=True,
@@ -318,166 +304,106 @@ class ChatScreen(Screen):
             halign="left",
             valign="middle",
             size_hint=(1, None),
-            height=dp(22),
             font_size=TypeScale.SM,
         )
         bind_label_size(self._engine_state)
-        self._engine_title = Label(
-            text="Bootstrapping offline AI model",
-            color=Theme.TEXT,
-            halign="left",
-            valign="middle",
-            size_hint=(1, None),
-            height=dp(24),
-            font_size=TypeScale.LG,
-            bold=True,
-        )
-        bind_label_size(self._engine_title)
         self._engine_detail = Label(
-            text="Preparing assets and service.",
+            text="Preparing offline model",
             color=Theme.TEXT_MUTED,
             halign="left",
             valign="middle",
             size_hint=(1, None),
-            height=dp(22),
-            font_size=TypeScale.SM,
+            font_size=TypeScale.XS,
         )
         bind_label_size(self._engine_detail)
         self._engine_card.add_widget(self._engine_state)
-        self._engine_card.add_widget(self._engine_title)
         self._engine_card.add_widget(self._engine_detail)
         root.add_widget(self._engine_card)
 
-        mode_row = SurfaceCard(
-            radius=Radius.MD,
-            color=Theme.SURFACE,
-            orientation="horizontal",
-            size_hint=(1, None),
-            height=dp(56),
-            spacing=Space.SM,
-            padding=[Space.SM, Space.XS],
-        )
-        self._btn_general = PillButton(
-            text="General Chat",
-            bg_color=Theme.PRIMARY,
-            size_hint=(0.5, None),
-            height=MIN_TOUCH,
-            font_size=TypeScale.SM,
-        )
-        self._btn_general.bind(on_release=lambda *_: self._set_mode(CHAT_MODE_GENERAL))
-
-        self._btn_document = PillButton(
-            text="Document Q&A",
-            bg_color=Theme.SURFACE_ALT,
-            size_hint=(0.5, None),
-            height=MIN_TOUCH,
-            font_size=TypeScale.SM,
-        )
-        self._btn_document.bind(on_release=lambda *_: self._set_mode(CHAT_MODE_DOCUMENT))
-
-        mode_row.add_widget(self._btn_general)
-        mode_row.add_widget(self._btn_document)
-        root.add_widget(mode_row)
-
-        self._mode_caption = Label(
-            text="",
-            color=Theme.TEXT_MUTED,
-            font_size=TypeScale.XS,
-            halign="left",
-            valign="middle",
-            size_hint=(1, None),
-            height=dp(18),
-        )
-        bind_label_size(self._mode_caption)
-        root.add_widget(self._mode_caption)
-
         self._docs_notice = SurfaceCard(
-            radius=Radius.MD,
             color=Theme.SURFACE_ALT,
             orientation="horizontal",
             size_hint=(1, None),
             height=0,
-            spacing=Space.SM,
-            padding=[Space.SM, Space.XS],
         )
-        notice_lbl = Label(
-            text="Document mode is empty. Add a file from Documents tab.",
+        self._notice_lbl = Label(
+            text="Document mode needs indexed files.",
             color=Theme.TEXT_MUTED,
             font_size=TypeScale.XS,
             halign="left",
             valign="middle",
         )
-        bind_label_size(notice_lbl)
-        open_docs = PillButton(
-            text="Open Documents",
+        bind_label_size(self._notice_lbl)
+        self._open_docs_btn = PillButton(
+            text="Open Docs",
             bg_color=Theme.PRIMARY_DARK,
             size_hint=(None, None),
-            size=(dp(132), MIN_TOUCH),
             font_size=TypeScale.XS,
+            radius=m.control_radius,
         )
-        open_docs.bind(on_release=lambda *_: self._go_to_docs())
-        self._docs_notice.add_widget(notice_lbl)
-        self._docs_notice.add_widget(open_docs)
+        self._open_docs_btn.bind(on_release=lambda *_: self._go_to_docs())
+        self._docs_notice.add_widget(self._notice_lbl)
+        self._docs_notice.add_widget(self._open_docs_btn)
         root.add_widget(self._docs_notice)
 
         self._scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False)
-        self._msgs = BoxLayout(orientation="vertical", size_hint=(1, None), spacing=dp(2))
+        self._msgs = BoxLayout(orientation="vertical", size_hint=(1, None))
         self._msgs.bind(minimum_height=self._msgs.setter("height"))
-        self._msgs.bind(height=lambda *_: self._scroll_to_bottom())
         self._scroll.add_widget(self._msgs)
-        paint_background(self._scroll, Theme.BG)
         root.add_widget(self._scroll)
 
-        self._add_msg(
-            "[b]Welcome to O-RAG.[/b]\nChoose [b]General Chat[/b] for standard conversation or [b]Document Q&A[/b] for grounded answers.",
-            role="assistant",
-        )
+        self._add_msg("[b]Welcome to O-RAG.[/b]", role="assistant")
 
-        input_zone = SurfaceCard(
-            radius=Radius.MD,
-            color=Theme.SURFACE,
-            orientation="vertical",
-            size_hint=(1, None),
-            height=dp(86),
-            spacing=0,
-        )
+        self._input_zone = SurfaceCard(color=Theme.SURFACE, orientation="vertical", size_hint=(1, None))
 
-        self._attach_strip = BoxLayout(
-            orientation="horizontal",
-            size_hint=(1, None),
-            height=0,
-            padding=[Space.SM, Space.XS, Space.SM, 0],
-        )
-        input_zone.add_widget(self._attach_strip)
+        self._attach_strip = BoxLayout(orientation="horizontal", size_hint=(1, None), height=0)
+        self._input_zone.add_widget(self._attach_strip)
 
-        input_row = BoxLayout(
-            orientation="horizontal",
-            size_hint=(1, None),
-            height=dp(78),
-            padding=[Space.SM, Space.SM, Space.SM, Space.SM],
-            spacing=Space.SM,
+        self._composer_meta = BoxLayout(orientation="horizontal", size_hint=(1, None))
+        self._mode_label = Label(
+            text="Mode",
+            color=Theme.TEXT_MUTED,
+            font_size=TypeScale.XS,
+            halign="left",
+            valign="middle",
+            size_hint=(1, 1),
         )
+        bind_label_size(self._mode_label)
 
-        attach_btn = PillButton(
+        self._btn_general = PillButton(
+            text="General",
+            bg_color=Theme.PRIMARY,
+            size_hint=(None, None),
+            font_size=TypeScale.XS,
+            radius=m.control_radius,
+        )
+        self._btn_general.bind(on_release=lambda *_: self._set_mode(CHAT_MODE_GENERAL))
+        self._btn_document = PillButton(
+            text="Docs",
+            bg_color=Theme.SURFACE_ALT,
+            size_hint=(None, None),
+            font_size=TypeScale.XS,
+            radius=m.control_radius,
+        )
+        self._btn_document.bind(on_release=lambda *_: self._set_mode(CHAT_MODE_DOCUMENT))
+
+        self._composer_meta.add_widget(self._mode_label)
+        self._composer_meta.add_widget(self._btn_general)
+        self._composer_meta.add_widget(self._btn_document)
+        self._input_zone.add_widget(self._composer_meta)
+
+        self._input_row = BoxLayout(orientation="horizontal", size_hint=(1, None))
+        self._attach_btn = PillButton(
             text="+",
             bg_color=Theme.SURFACE_ALT,
             size_hint=(None, None),
-            size=(MIN_TOUCH, MIN_TOUCH),
-            font_size=TypeScale.XL,
+            font_size=TypeScale.LG,
+            radius=m.control_radius,
         )
-        attach_btn.bind(on_release=self._on_attach)
-        input_row.add_widget(attach_btn)
+        self._attach_btn.bind(on_release=self._on_attach)
+        self._input_row.add_widget(self._attach_btn)
 
-        input_shell = SurfaceCard(
-            radius=Radius.PILL,
-            color=Theme.SURFACE_ALT,
-            orientation="horizontal",
-            size_hint=(1, None),
-            height=MIN_TOUCH,
-            padding=[Space.MD, Space.XS],
-            spacing=Space.SM,
-        )
-
+        self._input_shell = SurfaceCard(color=Theme.SURFACE_ALT, orientation="horizontal", size_hint=(1, None))
         self._input = TextInput(
             hint_text="Type a message...",
             multiline=False,
@@ -489,33 +415,93 @@ class ChatScreen(Screen):
             cursor_color=Theme.TEXT,
         )
         self._input.bind(on_text_validate=self._on_send)
-        input_shell.add_widget(self._input)
+        self._input_shell.add_widget(self._input)
 
         self._send_btn = PillButton(
             text=">",
             bg_color=Theme.PRIMARY,
             size_hint=(None, None),
-            size=(dp(40), dp(40)),
-            font_size=TypeScale.LG,
+            font_size=TypeScale.MD,
+            radius=m.control_radius,
         )
         self._send_btn.bind(on_release=self._on_send)
-        input_shell.add_widget(self._send_btn)
-        input_row.add_widget(input_shell)
+        self._input_shell.add_widget(self._send_btn)
 
-        input_zone.add_widget(input_row)
-        root.add_widget(input_zone)
+        self._input_row.add_widget(self._input_shell)
+        self._input_zone.add_widget(self._input_row)
+        root.add_widget(self._input_zone)
 
         self.add_widget(root)
-
+        self._apply_responsive_layout()
         self._set_send_enabled(False)
         self._set_mode(CHAT_MODE_GENERAL)
         Clock.schedule_once(self._register_pipeline_callbacks, 0)
 
+    def _apply_responsive_layout(self):
+        m = self._metrics
+        self._root.padding = [m.screen_pad_h, m.screen_pad_v, m.screen_pad_h, m.screen_pad_v]
+        self._root.spacing = m.gap_md
+
+        self._engine_card.padding = [m.gap_md, m.gap_sm, m.gap_md, m.gap_sm]
+        self._engine_card.spacing = dp(2)
+        self._engine_state.height = dp(22)
+        self._engine_detail.height = dp(18)
+
+        self._docs_notice.padding = [m.gap_sm, m.gap_sm, m.gap_sm, m.gap_sm]
+        self._docs_notice.spacing = m.gap_sm
+        self._open_docs_btn.size = (dp(96), dp(30))
+
+        self._msgs.spacing = dp(2)
+
+        self._input_zone.padding = [m.gap_sm, m.gap_sm, m.gap_sm, m.gap_sm]
+        self._input_zone.spacing = m.gap_sm
+
+        self._composer_meta.height = dp(28)
+        self._composer_meta.spacing = m.gap_sm
+        self._btn_general.size = (dp(82), dp(28))
+        self._btn_document.size = (dp(64), dp(28))
+
+        self._input_row.height = m.input_zone_h - dp(18)
+        self._input_row.spacing = m.gap_sm
+
+        control_h = dp(38)
+        self._attach_btn.size = (control_h, control_h)
+
+        self._input_shell.height = control_h
+        self._input_shell.padding = [m.gap_md, m.gap_sm, m.gap_sm, m.gap_sm]
+        self._input_shell.spacing = m.gap_sm
+        self._send_btn.size = (dp(32), dp(32))
+
+        if self._pending_attach:
+            self._attach_strip.height = m.attach_strip_h
+            self._input_zone.height = m.input_zone_h + m.attach_strip_h
+        else:
+            self._attach_strip.height = 0
+            self._input_zone.height = m.input_zone_h
+
+        self._refresh_mode_hint()
+        self._refresh_engine_card_height()
+
+        for child in self._msgs.children:
+            if isinstance(child, IngestStatusCard):
+                child.apply_metrics()
+            elif isinstance(child, TypingIndicator):
+                child.apply_metrics()
+            elif isinstance(child, RoleBubble):
+                child._apply_metrics()
+                child._on_width()
+
+        if self._attach_strip.children:
+            card = self._attach_strip.children[0]
+            if isinstance(card, AttachmentPreviewCard):
+                card.apply_metrics()
+
+    def _refresh_engine_card_height(self):
+        m = self._metrics
+        self._engine_card.height = m.engine_collapsed_h if self._model_ready else m.engine_expanded_h
+
     def _register_pipeline_callbacks(self, *_):
-        self._controller.register_bootstrap_callbacks(
-            on_progress=self._on_model_progress,
-            on_done=self._on_model_ready,
-        )
+        self._controller.register_bootstrap_callbacks(on_progress=self._on_model_progress, on_done=self._on_model_ready)
         try:
             event = self._controller.get_bootstrap_state()
             if event.state == BootstrapState.DOWNLOADING:
@@ -536,77 +522,64 @@ class ChatScreen(Screen):
         self._last_model_pct = pct
         self._last_model_update_at = now
 
-        txt = text.lower()
-        if "download" in txt or "hugging" in txt:
-            stage = "Downloading"
-        elif "loading" in txt or "start" in txt or "engine" in txt:
-            stage = "Starting"
-        else:
-            stage = "Preparing"
-
-        self._engine_state.text = f"[b]ENGINE:[/b] {stage}"
+        self._model_ready = False
+        self._engine_state.text = "[b]ENGINE:[/b] Starting"
         self._engine_state.color = Theme.WARNING
-        self._engine_title.text = f"Bootstrapping offline AI ({pct}%)"
-        self._engine_detail.text = text or "Preparing local runtime"
+        self._engine_detail.text = f"{text or 'Preparing offline runtime'} ({pct}%)"
+        self._refresh_engine_card_height()
+        self._set_send_enabled(False)
 
     @mainthread
     def _on_model_ready(self, success: bool, message: str):
         if success:
             self._model_ready = True
-            self._set_send_enabled(True)
             self._engine_state.text = "[b]ENGINE:[/b] Ready"
             self._engine_state.color = Theme.SUCCESS
-            self._engine_title.text = "Offline model is ready"
-            self._engine_detail.text = "You can chat now, or ask from indexed documents."
+            self._engine_detail.text = "Offline model is ready"
+            self._set_send_enabled(True)
             Clock.schedule_once(lambda *_: self._controller.start_service_once(), 0.05)
         else:
             self._model_ready = False
-            self._set_send_enabled(False)
             self._engine_state.text = "[b]ENGINE:[/b] Error"
             self._engine_state.color = Theme.DANGER
-            self._engine_title.text = "Model startup failed"
-            self._engine_detail.text = message or "Check first-run download connectivity and retry."
+            self._engine_detail.text = message or "Model startup failed"
+            self._set_send_enabled(False)
+        self._refresh_engine_card_height()
 
-    def _set_send_enabled(self, enabled: bool) -> None:
+    def _set_send_enabled(self, enabled: bool):
         self._send_btn.disabled = not enabled
         self._send_btn.opacity = 1.0 if enabled else 0.45
 
-    def _set_mode(self, mode: str) -> None:
-        self._selected_mode = CHAT_MODE_DOCUMENT if mode == CHAT_MODE_DOCUMENT else CHAT_MODE_GENERAL
+    def _refresh_mode_hint(self):
+        self._mode_label.text = f"{mode_title(self._selected_mode)}  |  docs: {self._doc_count}"
 
+    def _set_mode(self, mode: str):
+        self._selected_mode = CHAT_MODE_DOCUMENT if mode == CHAT_MODE_DOCUMENT else CHAT_MODE_GENERAL
         if self._selected_mode == CHAT_MODE_GENERAL:
             self._btn_general.set_bg(Theme.PRIMARY)
             self._btn_document.set_bg(Theme.SURFACE_ALT)
         else:
             self._btn_general.set_bg(Theme.SURFACE_ALT)
             self._btn_document.set_bg(Theme.PRIMARY)
-
         self._refresh_document_inventory()
 
-    def _refresh_document_inventory(self) -> None:
-        docs = self._safe_list_documents()
-        self._doc_count = len(docs)
-
-        mode_name = mode_title(self._selected_mode)
-        self._mode_caption.text = f"Mode: {mode_name}  |  Indexed docs: {self._doc_count}"
-
-        if self._selected_mode == CHAT_MODE_DOCUMENT and self._doc_count == 0:
-            self._docs_notice.height = dp(58)
-        else:
-            self._docs_notice.height = 0
-
-    def _safe_list_documents(self) -> list[dict]:
+    def _refresh_document_inventory(self):
         try:
-            return self._controller.list_documents()
+            docs = self._controller.list_documents()
         except Exception:
-            return []
+            docs = []
+        self._doc_count = len(docs)
+        self._refresh_mode_hint()
+
+        show_notice = self._selected_mode == CHAT_MODE_DOCUMENT and self._doc_count == 0
+        self._docs_notice.height = dp(44) if show_notice else 0
 
     def _go_to_docs(self):
         if callable(self._open_docs_tab):
             self._open_docs_tab()
 
     def _show_typing(self):
-        self._typing = TypingIndicator()
+        self._typing = TypingIndicator(self._get_metrics)
         self._msgs.add_widget(self._typing)
         self._scroll_to_bottom()
 
@@ -617,7 +590,7 @@ class ChatScreen(Screen):
             self._typing = None
 
     def _add_msg(self, text: str, role: str = "assistant") -> RoleBubble:
-        row = RoleBubble(text=text, role=role)
+        row = RoleBubble(text=text, role=role, metrics_getter=self._get_metrics)
         self._msgs.add_widget(row)
         Clock.schedule_once(lambda *_: self._scroll_to_bottom(), 0)
         return row
@@ -629,7 +602,6 @@ class ChatScreen(Screen):
         if self._picker_open:
             return
         self._picker_open = True
-
         import os
 
         if os.environ.get("ANDROID_PRIVATE"):
@@ -670,7 +642,6 @@ class ChatScreen(Screen):
             intent = Intent(Intent.ACTION_GET_CONTENT)
             intent.setType("*/*")
             intent.addCategory(Intent.CATEGORY_OPENABLE)
-
             try:
                 ArrayList = autoclass("java.util.ArrayList")
                 mimes = ArrayList()
@@ -742,16 +713,14 @@ class ChatScreen(Screen):
     def _stage_attachment(self, path: str):
         self._pending_attach = path
         self._attach_strip.clear_widgets()
-        self._attach_strip.add_widget(AttachmentPreviewCard(path, on_remove=self._clear_attachment))
-        self._attach_strip.height = dp(78)
-        self._attach_strip.parent.height = dp(158)
+        self._attach_strip.add_widget(AttachmentPreviewCard(path, on_remove=self._clear_attachment, metrics_getter=self._get_metrics))
+        self._apply_responsive_layout()
 
     @mainthread
     def _clear_attachment(self):
         self._pending_attach = None
         self._attach_strip.clear_widgets()
-        self._attach_strip.height = 0
-        self._attach_strip.parent.height = dp(86)
+        self._apply_responsive_layout()
 
     def _maybe_stage_plain_path(self, text: str) -> bool:
         s = text.strip()
@@ -797,7 +766,7 @@ class ChatScreen(Screen):
             return
 
         if not self._model_ready:
-            self._add_msg("AI engine is still starting. Please wait for the ready state.")
+            self._add_msg("AI engine is still starting. Please wait for ready state.")
             return
 
         self._refresh_document_inventory()
@@ -830,7 +799,7 @@ class ChatScreen(Screen):
             )
 
     def _start_ingest(self, path: str, file_name: str):
-        card = IngestStatusCard(file_name)
+        card = IngestStatusCard(file_name, metrics_getter=self._get_metrics)
         self._msgs.add_widget(card)
         card.set_stage("queued", "Waiting to start")
         self._scroll_to_bottom()
@@ -846,7 +815,7 @@ class ChatScreen(Screen):
         card.set_done(ok, msg)
         self._refresh_document_inventory()
         if ok:
-            self._add_msg("Document indexed. Switch to Document Q&A mode to ground answers.")
+            self._add_msg("Document indexed. Docs mode is now ready.")
         else:
             self._add_msg(f"[color=ff7777]Document ingest failed:[/color] {escape_markup(msg)}")
         self._scroll_to_bottom()
@@ -909,8 +878,4 @@ class ChatScreen(Screen):
         self._active_response_mode = CHAT_MODE_GENERAL
         self._current_row = None
         self._scroll_to_bottom()
-
-
-
-
 
