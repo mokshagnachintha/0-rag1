@@ -270,6 +270,9 @@ class ChatScreen(Screen):
         self._typing: TypingIndicator | None = None
         self._token_buf: list[str] = []
         self._token_flush_ev = None
+        self._active_task_id: str | None = None
+        self._message_widgets: list[Widget] = []
+        self._max_message_widgets = 50
 
         self._last_model_pct = -1
         self._last_model_update_at = 0.0
@@ -675,6 +678,18 @@ class ChatScreen(Screen):
         if hasattr(self, "_empty_state") and self._empty_state.parent is self._msgs:
             self._msgs.remove_widget(self._empty_state)
 
+    def _track_message_widget(self, widget: Widget):
+        self._message_widgets.append(widget)
+        while len(self._message_widgets) > self._max_message_widgets:
+            stale = self._message_widgets.pop(0)
+            if stale is self._current_row:
+                self._current_row = None
+            if stale.parent is self._msgs:
+                self._msgs.remove_widget(stale)
+
+    def _is_near_bottom(self) -> bool:
+        return self._scroll.scroll_y <= 0.08
+
     def _show_typing(self):
         self._hide_empty_state()
         self._typing = TypingIndicator(self._get_metrics)
@@ -691,11 +706,13 @@ class ChatScreen(Screen):
         self._hide_empty_state()
         row = RoleBubble(text=text, role=role, metrics_getter=self._get_metrics)
         self._msgs.add_widget(row)
-        Clock.schedule_once(lambda *_: self._scroll_to_bottom(), 0)
+        self._track_message_widget(row)
+        Clock.schedule_once(lambda *_: self._scroll_to_bottom(force=True), 0)
         return row
 
-    def _scroll_to_bottom(self, *_):
-        self._scroll.scroll_y = 0
+    def _scroll_to_bottom(self, *_, force: bool = False):
+        if force or self._is_near_bottom():
+            self._scroll.scroll_y = 0
 
     def _on_attach(self, *_):
         if self._picker_open:
@@ -887,9 +904,9 @@ class ChatScreen(Screen):
             self._token_flush_ev = None
 
         if mode == CHAT_MODE_DOCUMENT:
-            self._controller.ask(q, stream_cb=self._on_token, on_done=self._on_done)
+            self._active_task_id = self._controller.ask(q, stream_cb=self._on_token, on_done=self._on_done)
         else:
-            self._controller.chat_direct(
+            self._active_task_id = self._controller.chat_direct(
                 q,
                 history=list(self._history),
                 summary=self._history_summary,
@@ -901,8 +918,9 @@ class ChatScreen(Screen):
         self._hide_empty_state()
         card = IngestStatusCard(file_name, metrics_getter=self._get_metrics)
         self._msgs.add_widget(card)
+        self._track_message_widget(card)
         card.set_stage("queued", "Waiting to start")
-        self._scroll_to_bottom()
+        self._scroll_to_bottom(force=True)
 
         def _done(ok: bool, msg: str):
             self._ingest_done(card, ok, msg)
@@ -922,8 +940,14 @@ class ChatScreen(Screen):
 
     def _on_token(self, token: str):
         self._token_buf.append(token)
+        if len(self._token_buf) >= 50:
+            if self._token_flush_ev is not None:
+                Clock.unschedule(self._token_flush_ev)
+                self._token_flush_ev = None
+            Clock.schedule_once(self._flush_tokens, 0)
+            return
         if self._token_flush_ev is None:
-            self._token_flush_ev = Clock.schedule_once(self._flush_tokens, 0.12)
+            self._token_flush_ev = Clock.schedule_once(self._flush_tokens, 0.35)
 
     @mainthread
     def _flush_tokens(self, *_):
@@ -977,5 +1001,5 @@ class ChatScreen(Screen):
         self._pending_q = ""
         self._active_response_mode = CHAT_MODE_GENERAL
         self._current_row = None
+        self._active_task_id = None
         self._scroll_to_bottom()
-

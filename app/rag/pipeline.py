@@ -4,7 +4,6 @@ pipeline.py - Orchestrates document ingest, retrieval and generation.
 from __future__ import annotations
 
 import os
-import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -67,16 +66,13 @@ def register_auto_download_callbacks(
         bootstrap.emit_ready("Models ready: Qwen + Nomic")
         return
 
-    def _service_probe() -> None:
-        if _service_qwen_ready(wait_seconds=0.0):
-            qwen_path = model_dest_path(QWEN_MODEL["filename"])
-            try:
-                runtime.connect_external_server(qwen_path)
-                bootstrap.emit_ready("Models ready: Qwen + Nomic (service)")
-            except Exception:
-                pass
-
-    threading.Thread(target=_service_probe, daemon=True).start()
+    if _service_qwen_ready(wait_seconds=0.0):
+        qwen_path = model_dest_path(QWEN_MODEL["filename"])
+        try:
+            runtime.connect_external_server(qwen_path)
+            bootstrap.emit_ready("Models ready: Qwen + Nomic (service)")
+        except Exception:
+            pass
 
 
 def init() -> None:
@@ -113,13 +109,11 @@ def _start_auto_download() -> None:
                 pass
 
         # Fallback: load/connect from app process.
-        load_model(
-            qwen_path,
-            on_progress=_progress,
-            on_done=lambda ok, msg: (
-                bootstrap.emit_ready(msg if ok else "") if ok else bootstrap.emit_error(msg)
-            ),
-        )
+        ok, msg = load_model(qwen_path, on_progress=_progress)
+        if ok:
+            bootstrap.emit_ready(msg)
+        else:
+            bootstrap.emit_error(msg)
 
     auto_download_default(on_progress=_progress, on_done=_done)
 
@@ -127,53 +121,49 @@ def _start_auto_download() -> None:
 def ingest_document(
     file_path: str,
     on_done: Optional[Callable[[bool, str], None]] = None,
-) -> None:
+) -> tuple[bool, str]:
     """
-    Ingest a .txt or .pdf file in a background thread.
+    Ingest a .txt or .pdf file synchronously.
     Starts Nomic server lazily on first call.
     """
+    try:
+        nomic_path = model_dest_path(NOMIC_MODEL["filename"])
+        if os.path.isfile(nomic_path) and isinstance(runtime, LlamaModelRuntime):
+            runtime.start_nomic_server_if_needed(nomic_path)
 
-    def _run() -> None:
-        try:
-            nomic_path = model_dest_path(NOMIC_MODEL["filename"])
-            if os.path.isfile(nomic_path) and isinstance(runtime, LlamaModelRuntime):
-                runtime.start_nomic_server_if_needed(nomic_path)
+        name = Path(file_path).name
+        doc_id = insert_document(name, file_path)
+        chunks = process_document(file_path)
+        insert_chunks(doc_id, chunks)
+        update_doc_chunk_count(doc_id, len(chunks))
+        retriever.reload()
+        result = (True, f"Ingested '{name}' - {len(chunks)} chunks")
+    except Exception as exc:
+        import traceback
 
-            name = Path(file_path).name
-            doc_id = insert_document(name, file_path)
-            chunks = process_document(file_path)
-            insert_chunks(doc_id, chunks)
-            update_doc_chunk_count(doc_id, len(chunks))
-            retriever.reload()
-            if on_done:
-                on_done(True, f"Ingested '{name}' - {len(chunks)} chunks")
-        except Exception as exc:
-            import traceback
+        traceback.print_exc()
+        result = (False, f"Error: {exc}")
 
-            traceback.print_exc()
-            if on_done:
-                on_done(False, f"Error: {exc}")
-
-    threading.Thread(target=_run, daemon=True).start()
+    if on_done:
+        on_done(*result)
+    return result
 
 
 def load_model(
     model_path: str,
     on_progress: Optional[Callable[[float, str], None]] = None,
     on_done: Optional[Callable[[bool, str], None]] = None,
-) -> None:
-    """Load a GGUF model in a background thread."""
+) -> tuple[bool, str]:
+    """Load a GGUF model synchronously."""
+    try:
+        runtime.load(model_path, on_progress=on_progress)
+        result = (True, f"Model loaded: {Path(model_path).name}")
+    except Exception as exc:
+        result = (False, f"Failed to load model: {exc}")
 
-    def _run() -> None:
-        try:
-            runtime.load(model_path, on_progress=on_progress)
-            if on_done:
-                on_done(True, f"Model loaded: {Path(model_path).name}")
-        except Exception as exc:
-            if on_done:
-                on_done(False, f"Failed to load model: {exc}")
-
-    threading.Thread(target=_run, daemon=True).start()
+    if on_done:
+        on_done(*result)
+    return result
 
 
 def get_available_models() -> list[str]:
@@ -226,70 +216,53 @@ def chat_direct(
     summary: str = "",
     stream_cb: Optional[Callable[[str], None]] = None,
     on_done: Optional[Callable[[bool, str], None]] = None,
-) -> None:
+) -> tuple[bool, str]:
     """
     Chat directly with the LLM (no retrieval).
     history: last 3 verbatim (user, assistant) turns.
     summary: compressed plain-text summary of older turns.
     """
-
-    def _run() -> None:
-        try:
-            if not runtime.is_loaded():
-                if on_done:
-                    on_done(False, "No LLM model loaded. Please load a GGUF model first.")
-                return
-
+    try:
+        if not runtime.is_loaded():
+            result = (False, "No LLM model loaded. Please load a GGUF model first.")
+        else:
             prompt = build_direct_prompt(question, history, summary)
             answer = runtime.generate(prompt, stream_cb=stream_cb).strip()
-            if on_done:
-                on_done(True, answer)
+            result = (True, answer)
+    except Exception as exc:
+        result = (False, f"Error during inference: {exc}")
 
-        except Exception as exc:
-            if on_done:
-                on_done(False, f"Error during inference: {exc}")
-
-    threading.Thread(target=_run, daemon=True).start()
+    if on_done:
+        on_done(*result)
+    return result
 
 
 def ask(
     question: str,
     stream_cb: Optional[Callable[[str], None]] = None,
     on_done: Optional[Callable[[bool, str], None]] = None,
-) -> None:
+) -> tuple[bool, str]:
     """
-    Run a RAG query in a background thread.
+    Run a RAG query synchronously.
     Retrieves top-2 chunks to fit mobile context budget.
     """
-
-    def _run() -> None:
-        try:
-            if retriever.is_empty():
-                if on_done:
-                    on_done(False, "No documents ingested yet.")
-                return
-
-            if not runtime.is_loaded():
-                if on_done:
-                    on_done(False, "No LLM model loaded. Please load a GGUF model first.")
-                return
-
+    try:
+        if retriever.is_empty():
+            result = (False, "No documents ingested yet.")
+        elif not runtime.is_loaded():
+            result = (False, "No LLM model loaded. Please load a GGUF model first.")
+        else:
             results = retriever.query(question, top_k=2)
             if not results:
-                if on_done:
-                    on_done(False, "No relevant context found.")
-                return
+                result = (False, "No relevant context found.")
+            else:
+                context_chunks = [text for text, _ in results]
+                prompt = build_rag_prompt(context_chunks, question)
+                answer = runtime.generate(prompt, stream_cb=stream_cb).strip()
+                result = (True, answer)
+    except Exception as exc:
+        result = (False, f"Error during inference: {exc}")
 
-            context_chunks = [text for text, _ in results]
-            prompt = build_rag_prompt(context_chunks, question)
-            answer = runtime.generate(prompt, stream_cb=stream_cb).strip()
-
-            if on_done:
-                on_done(True, answer)
-
-        except Exception as exc:
-            if on_done:
-                on_done(False, f"Error during inference: {exc}")
-
-    threading.Thread(target=_run, daemon=True).start()
-
+    if on_done:
+        on_done(*result)
+    return result

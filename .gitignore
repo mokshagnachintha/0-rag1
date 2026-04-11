@@ -2,6 +2,7 @@
 # Large model files
 *.gguf
 *.bin
+*.apk
 model_tmp/
 .buildozer/
 __pycache__/

@@ -2,7 +2,6 @@
 
 import os
 import sys
-import threading
 import traceback
 
 os.environ.setdefault("KIVY_LOG_LEVEL", "warning")
@@ -13,7 +12,6 @@ if not os.environ.get("ANDROID_PRIVATE"):
     os.environ.setdefault(ENV_FORCE_BOOTSTRAP_DOWNLOAD, "1")
 
 from kivy.app import App
-from kivy.clock import Clock
 from kivy.config import Config
 from kivy.core.window import Window
 from kivy.graphics import Color, Rectangle
@@ -21,7 +19,6 @@ from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
 from kivy.uix.screenmanager import NoTransition, ScreenManager
 
-from app.rag.pipeline import init
 from app.ui.chat.chat_screen import ChatScreen
 from app.ui.docs.docs_screen import DocsScreen
 from app.ui.responsive import current_metrics
@@ -153,14 +150,6 @@ class AppShell(BoxLayout):
 class RAGApp(App):
     title = "O-RAG"
 
-    def _start_pipeline_init_async(self, *_):
-        def _run():
-            try:
-                init()
-            except Exception:
-                _global_exception_handler(*sys.exc_info())
-
-        threading.Thread(target=_run, daemon=True).start()
 
     def build(self):
         root = BoxLayout(orientation="vertical")
@@ -170,7 +159,6 @@ class RAGApp(App):
         root.bind(pos=lambda w, _: setattr(bg, "pos", w.pos), size=lambda w, _: setattr(bg, "size", w.size))
 
         root.add_widget(AppShell())
-        Clock.schedule_once(self._start_pipeline_init_async, 0.3)
         return root
 
 
